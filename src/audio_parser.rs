@@ -1,6 +1,6 @@
 //! Utilities for WAVE audio parsing.
 
-use std::{fs::File, io::BufWriter};
+use std::{fs, io::BufWriter, path::Path};
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use sha2::{Sha256, Digest};
@@ -62,7 +62,15 @@ pub fn write_file_44100hz_16bits_mono(filepath: &str, samples: &Vec<i16>) {
         sample_format: SampleFormat::Int,
     };
 
-    let writer = BufWriter::new(File::create(filepath)
+    // Create parent directories if they do not exist
+    if let Some(parent) = Path::new(filepath).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .expect("Failed creating parent directories");
+        }
+    }
+
+    let writer = BufWriter::new(fs::File::create(filepath)
         .expect("Failed creating WAVE file"));
     let mut wav_writer = WavWriter::new(writer, spec)
         .expect("Failed writing WAVE specs to file");
