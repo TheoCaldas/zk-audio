@@ -3,4 +3,5 @@
 
 pub mod circuit;
 pub mod audio_parser;
+pub mod audio_editor;
 pub mod signer;

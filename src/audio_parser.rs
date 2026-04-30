@@ -6,6 +6,7 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use sha2::{Sha256, Digest};
 
 pub type WaveSampleFormat = SampleFormat;
+pub enum WaveType { Stereo, Mono }
 
 /// Converts SampleFormat enum to string for printing.
 /// # Examples
@@ -53,11 +54,19 @@ pub fn read_samples(filepath: &str) -> Vec<i16> {
     reader.samples::<i16>().flatten().collect()
 }
 
-/// Writes WAVE file to disk with (Mono, 44100Hz, i-16bit) format
-pub fn write_file_44100hz_16bits_mono(filepath: &str, samples: &Vec<i16>) {
+/// Writes WAVE file to disk with 16bit bit depth
+pub fn write_file_16bits(
+    filepath: &str,
+    samples: &Vec<i16>,
+    sample_rate: u32,
+    channels: WaveType
+) {
     let spec = WavSpec {
-        channels: 1,
-        sample_rate: 44100,
+        channels: match channels {
+            WaveType::Stereo => 2,
+            WaveType::Mono => 1,
+        },
+        sample_rate: sample_rate,
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
@@ -134,7 +143,9 @@ mod tests {
     fn setup() {
         SETUP_INSTANCE.call_once(|| {
             if !std::path::Path::new(TEST_FILE).exists() {
-                write_file_44100hz_16bits_mono(TEST_FILE, &SAMPLE_INPUT.to_vec());
+                write_file_16bits(
+                    TEST_FILE, &SAMPLE_INPUT.to_vec(), 44100, WaveType::Mono
+                );
             }
         });
     }

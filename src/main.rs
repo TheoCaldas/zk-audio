@@ -1,37 +1,47 @@
-use zk_audio::{audio_parser, signer, circuit};
+use zk_audio::{audio_editor, audio_parser::{self, WaveType}, circuit, signer};
 
 fn main() {
-    /* Test Circuit */
-    let name = "dist_step";
-    let circuit_filepath = &format!("artifacts/{}.r1cs", name);
-    let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", name, name);
-    circuit::run_test(circuit_filepath, witness_gen_filepath);
+    // /* Test Circuit */
+    // let name = "dist_step";
+    // let circuit_filepath = &format!("artifacts/{}.r1cs", name);
+    // let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", name, name);
+    // circuit::run_test(circuit_filepath, witness_gen_filepath);
 
-    /* Test Audio Samples */
-    let name = "test_12.16.01";
-    audio_parser::print_specs(&format!("raw_audios/{}.wav", name));
-    audio_parser::print_samples(&format!("raw_audios/{}.wav", name), 10).unwrap();
-
-    /* Test Signature */
-    let name = "260426";
-    let key = signer::import_key(&format!("signers/private_p256_{}.pem", name));
-    let text = "Hello, world!";
-    let sig = dbg!(signer::sign_text(text, &key));
+    /* Apply Transformations */
+    let input_name = "2c_44sr_16bd_01";
+    let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
+    let sample_rate = 44100;
     
-    // let hash = signer::hash_text(text);
-    // dbg!(signer::sign_hash(hash, &key));
+    // gain
+    let output_name = &format!("output/{}_gain", input_name);
+    let amount = 127;
+    let edited = audio_editor::gain_multiplier(&original, amount).unwrap();
+    audio_parser::write_file_16bits(
+        &format!("raw_audios/{}.wav", output_name),
+        &edited,
+        sample_rate,
+        WaveType::Stereo,
+    );
 
-    let pub_key = signer::import_pub_key(&format!("signers/public_p256_{}.pem", name));
-    let verified = signer::verify_text(text, &sig, &pub_key);
-    println!("{}\n", format!("Text `{}` was verified: {}", text, verified));
+    // distortion
+    let output_name = &format!("output/{}_dist", input_name);
+    let edited = audio_editor::distortion(&original);
+    audio_parser::write_file_16bits(
+        &format!("raw_audios/{}.wav", output_name),
+        &edited,
+        sample_rate,
+        WaveType::Stereo,
+    );
 
-    /* Sign Audio Samples */
-    let name = "test_12.16.01";
-    // let audio_hash = audio_parser::hash_samples_from(&format!("raw_audios/{}.wav", name));
-    let samples = audio_parser::read_samples(&format!("raw_audios/{}.wav", name));
-    let audio_hash = audio_parser::hash_samples(&samples);
-    let sig = dbg!(signer::sign_hash(&audio_hash, &key));
-
-    let verified = signer::verify_hash(&audio_hash, &sig, &pub_key);
-    println!("{}\n", format!("Audio `raw_audios/{}.wav` was verified: {}", name, verified));
+    // pitch shifter
+    let output_name = &format!("output/{}_pshift", input_name);
+    // let edited = audio_editor::pitch_shifter(&original, 2, sample_rate.into());
+    let edited = audio_editor::pitch_shifter(&original, 0.9, sample_rate as f32);
+    audio_parser::write_file_16bits(
+        &format!("raw_audios/{}.wav", output_name),
+        &edited,
+        sample_rate,
+        WaveType::Stereo,
+    );
+    
 }
