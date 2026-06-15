@@ -3,6 +3,7 @@
 /node_modules
 /signers
 /raw_audios
+/serialized
 /circuits/node_modules
 /circuits/circom
 recursive_snark.json

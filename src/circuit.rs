@@ -4,29 +4,48 @@ use nova_scotia::{
     circom::reader::load_r1cs, create_public_params, create_recursive_circuit, FileLocation, F, S,
 };
 use nova_snark::{CompressedSNARK, PublicParams};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str) {
+#[derive(Deserialize)]
+#[derive(Serialize)]
+pub struct MultiplierInput {
+    pub original: Vec<Vec<String>>,
+    pub edited: Vec<Vec<String>>,
+}
+
+pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str, json_input_filepath: &str) {
     type G1 = pasta_curves::pallas::Point;
     type G2 = pasta_curves::vesta::Point;
 
+    
     println!(
         "Running test with witness generator: {} and group: {}",
         witness_gen_filepath,
         std::any::type_name::<G1>()
     );
-    let iteration_count = 10;
     let root = current_dir().unwrap();
-
+    
     let circuit_file = root.join(circuit_filepath);
     let r1cs = load_r1cs::<G1, G2>(&FileLocation::PathBuf(circuit_file));
     let witness_generator_file = root.join(witness_gen_filepath);
+    
+    println!();
+    println!("Loading JSON input from \"{}\"... ", json_input_filepath);
+    let input_data: MultiplierInput = serde_json::from_str(
+        &std::fs::read_to_string(json_input_filepath).expect("Failed to read JSON file"))
+        .expect("Deserialization failed");
+    assert_eq!(input_data.original.len(), input_data.edited.len(), "Original and edited batches must have the same length");
+    let iteration_count = input_data.original.len();
+    println!("Number of iterations (batches): {}", iteration_count);
+    println!("Batch size: {}", input_data.original[0].len());
+    println!();
 
     let mut private_inputs = Vec::new();
     for i in 0..iteration_count {
         let mut private_input = HashMap::new();
-        private_input.insert("orig".to_string(), json!(i));
-        private_input.insert("edit".to_string(), json!(i * 2));
+        private_input.insert("orig".to_string(), json!(input_data.original[i]));
+        private_input.insert("edit".to_string(), json!(input_data.edited[i]));
         private_inputs.push(private_input);
     }
     

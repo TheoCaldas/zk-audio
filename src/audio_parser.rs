@@ -1,9 +1,12 @@
 //! Utilities for WAVE audio parsing.
 
-use std::{fs, io::BufWriter, path::Path};
+use std::{collections::HashMap, fs, io::{BufWriter, Write}, path::Path};
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
+use serde_json::json;
 use sha2::{Sha256, Digest};
+
+use crate::circuit::MultiplierInput;
 
 pub type WaveSampleFormat = SampleFormat;
 pub enum WaveType { Stereo, Mono }
@@ -112,6 +115,38 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
         hasher.update(bytes);
     }
     hasher.finalize().to_vec()
+}
+
+/* --- SERIALIZE OPERATIONS --- */
+/// Normalizes i16 samples to non-negative strings for JSON serialization.
+pub fn normalize_samples(samples: &[i16]) -> Vec<String> {
+    samples
+        .iter()
+        .map(|&s| ((s as i32) - (i16::MIN as i32)).to_string())
+        .collect()
+}
+
+/// Serializes allocated samples to JSON file and write to disk.
+pub fn serialize_samples(
+    original: &Vec<i16>,
+    edited: &Vec<i16>,
+    batch_size: usize,
+    filepath: &str
+) {
+    let mut batched_original = Vec::new();
+    for batch in original.chunks(batch_size) {
+        batched_original.push(normalize_samples(&batch));
+    }
+    let mut batched_edited = Vec::new();
+    for batch in edited.chunks(batch_size) {
+        batched_edited.push(normalize_samples(&batch));
+    }
+    let input_data = MultiplierInput {
+        original: batched_original,
+        edited: batched_edited,
+    };
+    let mut file = fs::File::create(filepath).unwrap();
+    file.write_all(serde_json::to_string_pretty(&json!(input_data)).unwrap().as_bytes()).unwrap();
 }
 
 /* --- UNIT TESTS --- */
