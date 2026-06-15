@@ -3,3 +3,7 @@
 /node_modules
 /signers
 /raw_audios
+/circuits/node_modules
+/circuits/circom
+recursive_snark.json
+.DS_Store

@@ -25,11 +25,12 @@ pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str) {
     let mut private_inputs = Vec::new();
     for i in 0..iteration_count {
         let mut private_input = HashMap::new();
-        private_input.insert("x".to_string(), json!(i));
+        private_input.insert("orig".to_string(), json!(i));
+        private_input.insert("edit".to_string(), json!(i * 2));
         private_inputs.push(private_input);
     }
     
-    private_inputs = dbg!(private_inputs);
+    // private_inputs = dbg!(private_inputs);
 
     let start_public_input = [F::<G1>::from(0), F::<G1>::from(0)];
 
@@ -98,7 +99,7 @@ pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str) {
     );
     assert!(res.is_ok());
     let compressed_snark = res.unwrap();
-    println!("{}", json!(compressed_snark));
+    // println!("{}", json!(compressed_snark));
 
     // verify the compressed SNARK
     println!("Verifying a CompressedSNARK...");
