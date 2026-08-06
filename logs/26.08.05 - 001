@@ -1,0 +1,16 @@
+Loading JSON input from "serialized/c_multiplier_batch_10_600.json"... 
+Number of iterations (batches): 4
+Batch size: 10
+
+Number of constraints per step (primary circuit): 25878
+Number of constraints per step (secondary circuit): 10347
+Number of variables per step (primary circuit): 25722
+Number of variables per step (secondary circuit): 10329
+Creating a RecursiveSNARK...
+RecursiveSNARK creation took 3.115294834s
+Verifying a RecursiveSNARK...
+RecursiveSNARK::verify: Ok(([0x01fc62a89680c5141426db961a75ac4364f027ed7f210eb20a48951102ee411d, 0x2b43c24221f1550254cd2ba561c9c3533383b82620fbb104883f87ba19184244], [0x0000000000000000000000000000000000000000000000000000000000000000])), took 113.938167ms
+Generating a CompressedSNARK using Spartan with IPA-PC...
+CompressedSNARK::prove: true, took 19.842913166s
+Verifying a CompressedSNARK...
+CompressedSNARK::verify: true, took 146.116625ms

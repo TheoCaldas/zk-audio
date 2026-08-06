@@ -1716,6 +1716,7 @@ dependencies = [
  "bellperson",
  "byteorder",
  "ff",
+ "hex",
  "hex-literal",
  "hound",
  "itertools 0.9.0",

@@ -5,6 +5,8 @@ use std::{collections::HashMap, fs, io::{BufWriter, Write}, path::Path};
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde_json::json;
 use sha2::{Sha256, Digest};
+use num_bigint::BigUint;
+
 
 use crate::circuit::MultiplierInput;
 
@@ -118,11 +120,26 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
 }
 
 /* --- SERIALIZE OPERATIONS --- */
+
+pub fn compress_samples(samples: Vec<i16>) -> Vec<String> {
+    let mut compressed = Vec::new();
+
+    for chunk in samples.chunks(15) {
+        let mut bytes = Vec::with_capacity(chunk.len() * 2);
+        for &sample in chunk {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        let value = BigUint::from_bytes_le(&bytes);
+        compressed.push(format!("0x{}", value.to_str_radix(16)));
+    }
+    compressed
+}
+
 /// Normalizes i16 samples to non-negative strings for JSON serialization.
-pub fn normalize_samples(samples: &[i16]) -> Vec<String> {
+pub fn normalize_samples(samples: &[i16]) -> Vec<i16> {
     samples
         .iter()
-        .map(|&s| ((s as i32) - (i16::MIN as i32)).to_string())
+        .map(|&s| ((s as i32) - (i16::MIN as i32)) as i16)
         .collect()
 }
 
@@ -135,11 +152,11 @@ pub fn serialize_samples(
 ) {
     let mut batched_original = Vec::new();
     for batch in original.chunks(batch_size) {
-        batched_original.push(normalize_samples(&batch));
+        batched_original.push(compress_samples(normalize_samples(&batch)));
     }
     let mut batched_edited = Vec::new();
     for batch in edited.chunks(batch_size) {
-        batched_edited.push(normalize_samples(&batch));
+        batched_edited.push(compress_samples(normalize_samples(&batch)));
     }
     let input_data = MultiplierInput {
         original: batched_original,
