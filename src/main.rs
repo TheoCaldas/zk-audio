@@ -3,9 +3,10 @@ use zk_audio::{audio_editor, audio_parser::{self, WaveType}, circuit, signer};
 fn main() {
     /* Inputs */
     let sample_rate = 44100;
-    let batch_size = 1000; 
-    let max_size = 5000;
-    let circuit_name = &format!("multiplier_batch_{}", batch_size);
+    let batch_size = 100; 
+    let comp_size = 15;
+    let max_size = 600000;
+    let circuit_name = &format!("c_multiplier_batch_{}", batch_size);
     let circuit_filepath = &format!("artifacts/{}.r1cs", circuit_name);
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
     
@@ -18,7 +19,7 @@ fn main() {
     audio_parser::serialize_samples(
         &original[0..max_size].to_vec(), 
         &original[0..max_size].to_vec().iter().map(|x| x * 2).collect(),
-        batch_size,
+        batch_size * comp_size,
         json_input_filepath
     );
 

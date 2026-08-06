@@ -3,8 +3,9 @@
 /node_modules
 /signers
 /raw_audios
-/serialized
+# /serialized
 /circuits/node_modules
 /circuits/circom
 recursive_snark.json
+input.json
 .DS_Store
