@@ -7,6 +7,9 @@ use serde_json::json;
 use sha2::{Sha256, Digest};
 use num_bigint::BigUint;
 
+use ark_bn254::Fr;
+use ark_ff::{PrimeField, BigInteger};
+use light_poseidon::{Poseidon, PoseidonHasher, parameters::bn254_x5};
 
 use crate::circuit::MultiplierInput;
 
@@ -119,6 +122,70 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+pub fn poseidon_hash_samples(samples: &[i16]) -> Fr {
+    let mut h = Fr::from(0u64);
+    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
+
+    for &sample in samples {
+        h = poseidon
+            .hash(&[
+                h,
+                Fr::from(u64::from(sample as u16)),
+            ])
+            .unwrap();
+    }
+    h
+}
+
+// pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
+//     let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
+//     let mut h = Fr::from(0u64);
+
+//     for chunk in chunks {
+//         // Convert the 240-bit integer into a BN254 field element.
+//         let chunk_fr = Fr::from_le_bytes_mod_order(&chunk.to_bytes_le());
+//         h = poseidon.hash(&[h, chunk_fr]).unwrap();
+//     }
+//     h
+// }
+
+pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
+    assert!(!chunks.is_empty());
+    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
+    let mut h = poseidon.hash(&[
+        Fr::from_le_bytes_mod_order(&chunks[0].to_bytes_le()),
+        Fr::from_le_bytes_mod_order(&chunks[1].to_bytes_le()),
+    ]).unwrap();
+
+    for chunk in &chunks[2..] {
+        let chunk_fr = Fr::from_le_bytes_mod_order(&chunk.to_bytes_le());
+        h = poseidon.hash(&[h, chunk_fr]).unwrap();
+    }
+    h
+}
+
+pub fn ex_poseidon_hash() -> () {
+    let mut p = Poseidon::<Fr>::new(bn254_x5::get_poseidon_parameters(3).unwrap());
+    // let mut p = Poseidon::<Fr>::new_circom(2).unwrap();
+    let h = p.hash(&[
+        Fr::from(1u64),
+        Fr::from(2u64),
+    ]).unwrap();
+    println!("\nPoseidon(1, 2): 0x{:x}", BigUint::from_bytes_le(&h.into_bigint().to_bytes_le()));
+}
+
+pub fn hex_poseidon_hash_samples(samples: &[i16]) -> String {
+    let hash = poseidon_hash_samples(samples);
+    let s = format!("0x{:x}", BigUint::from_bytes_le(&hash.into_bigint().to_bytes_le()));
+    s
+}
+
+pub fn hex_poseidon_hash_chunks(chunks: &[BigUint]) -> String {
+    let hash = poseidon_hash_chunks(chunks);
+    let s = format!("0x{:x}", BigUint::from_bytes_le(&hash.into_bigint().to_bytes_le()));
+    s
+}
+
 /* --- SERIALIZE OPERATIONS --- */
 
 pub fn compress_samples(samples: Vec<i16>) -> Vec<String> {
@@ -131,6 +198,20 @@ pub fn compress_samples(samples: Vec<i16>) -> Vec<String> {
         }
         let value = BigUint::from_bytes_le(&bytes);
         compressed.push(format!("0x{}", value.to_str_radix(16)));
+    }
+    compressed
+}
+
+pub fn compress_samples_bigint(samples: Vec<i16>) -> Vec<BigUint> {
+    let mut compressed = Vec::new();
+
+    for chunk in samples.chunks(15) {
+        let mut bytes = Vec::with_capacity(chunk.len() * 2);
+        for &sample in chunk {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        let value = BigUint::from_bytes_le(&bytes);
+        compressed.push(value);
     }
     compressed
 }
