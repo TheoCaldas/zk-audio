@@ -19,3 +19,4 @@ if [ ! -d "$OUTPUT_PATH" ]; then
 fi
 
 circom $CIRCUIT_PATH -o $OUTPUT_PATH --r1cs --sym --wasm --prime vesta
+# circom $CIRCUIT_PATH -o $OUTPUT_PATH --r1cs --sym --wasm

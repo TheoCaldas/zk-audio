@@ -5,14 +5,15 @@ fn main() {
     let sample_rate = 44100;
     let batch_size = 10; 
     let comp_size = 15;
-    let max_size = 150;
-    let circuit_name = &format!("c_multiplier_batch_{}", batch_size);
+    let max_size = 600;
+    let circuit_sufix = "c_multiplier_batch";
+    let circuit_name = &format!("{}_{}", circuit_sufix, batch_size);
     let circuit_filepath = &format!("artifacts/{}.r1cs", circuit_name);
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
     
-    // /* Read Audio Samples */
-    // let input_name = "2c_44sr_16bd_01";
-    // let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
+    /* Read Audio Samples */
+    let input_name = "2c_44sr_16bd_01";
+    let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
 
     // /* Hash Samples */
     // let original_hash = audio_parser::hex_poseidon_hash_chunks(
@@ -20,20 +21,17 @@ fn main() {
     // );
     // println!("\nPoseidon hash of original compressed samples: {}\n", original_hash);
 
-    // /* Serialize Samples */
-    // let json_input_filepath = &format!("serialized/{}_{}.json", circuit_name, max_size);
-    // audio_parser::serialize_samples(
-    //     &original[0..max_size].to_vec(), 
-    //     &original[0..max_size].to_vec().iter().map(|x| x * 2).collect(),
-    //     batch_size * comp_size,
-    //     json_input_filepath
-    // );
+    /* Serialize Samples */
+    let json_input_filepath = &format!("serialized/{}_{}.json", circuit_name, max_size);
+    audio_parser::serialize_samples(
+        &original[0..max_size].to_vec(), 
+        &original[0..max_size].to_vec().iter().map(|x| x * 2).collect(),
+        batch_size * comp_size,
+        json_input_filepath
+    );
 
     /* Test Circuit */
-    // circuit::run_test(circuit_filepath, witness_gen_filepath, json_input_filepath);
-    // circuit::run_test_2("artifacts/test.r1cs", "artifacts/test_js/test.wasm");
-
-    audio_parser::ex_poseidon_hash();
+    circuit::run_test(circuit_filepath, witness_gen_filepath, json_input_filepath);
     
     /* Apply Transformations */
     // // gain

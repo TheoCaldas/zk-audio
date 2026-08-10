@@ -137,18 +137,6 @@ pub fn poseidon_hash_samples(samples: &[i16]) -> Fr {
     h
 }
 
-// pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
-//     let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
-//     let mut h = Fr::from(0u64);
-
-//     for chunk in chunks {
-//         // Convert the 240-bit integer into a BN254 field element.
-//         let chunk_fr = Fr::from_le_bytes_mod_order(&chunk.to_bytes_le());
-//         h = poseidon.hash(&[h, chunk_fr]).unwrap();
-//     }
-//     h
-// }
-
 pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
     assert!(!chunks.is_empty());
     let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
@@ -162,16 +150,6 @@ pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
         h = poseidon.hash(&[h, chunk_fr]).unwrap();
     }
     h
-}
-
-pub fn ex_poseidon_hash() -> () {
-    let mut p = Poseidon::<Fr>::new(bn254_x5::get_poseidon_parameters(3).unwrap());
-    // let mut p = Poseidon::<Fr>::new_circom(2).unwrap();
-    let h = p.hash(&[
-        Fr::from(1u64),
-        Fr::from(2u64),
-    ]).unwrap();
-    println!("\nPoseidon(1, 2): 0x{:x}", BigUint::from_bytes_le(&h.into_bigint().to_bytes_le()));
 }
 
 pub fn hex_poseidon_hash_samples(samples: &[i16]) -> String {
