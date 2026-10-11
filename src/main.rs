@@ -3,11 +3,13 @@ use zk_audio::{audio_editor, audio_parser::{self, WaveType}, circuit, signer};
 fn main() {
     /* Inputs */
     let sample_rate = 44100;
-    let batch_size = 10; 
+    let bit_depth = 16;
+    let batch_size = 100;
     let comp_size = 15;
-    let max_size = 600;
-    let circuit_sufix = "c_multiplier_batch";
-    let circuit_name = &format!("{}_{}", circuit_sufix, batch_size);
+    let max_size = 600000;
+    // Naming convention: b = bit depth, B = batch size, N = total samples.
+    let circuit_prefix = "multiplier";
+    let circuit_name = &format!("{}_b{}_B{}", circuit_prefix, bit_depth, batch_size);
     let circuit_filepath = &format!("artifacts/{}.r1cs", circuit_name);
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
     
@@ -22,7 +24,7 @@ fn main() {
     // println!("\nPoseidon hash of original compressed samples: {}\n", original_hash);
 
     /* Serialize Samples */
-    let json_input_filepath = &format!("serialized/{}_{}.json", circuit_name, max_size);
+    let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
     audio_parser::serialize_samples(
         &original[0..max_size].to_vec(), 
         &original[0..max_size].to_vec().iter().map(|x| x * 2).collect(),

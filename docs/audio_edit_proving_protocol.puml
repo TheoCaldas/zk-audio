@@ -1,0 +1,68 @@
+@startuml audio_edit_proving_protocol
+title Verifiable Audio Editing Protocol
+
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 200
+
+participant "Attesting Device\n(Signer)" as D
+participant "Editor\n(Prover)" as P
+participant "Verifier" as V
+
+== Phase 1-2: Attested capture ==
+
+D -> D : (sk, pk) <- KeyGen(1^λ)
+D -> D : h_α <- accumulate H over α\n(Def. accumulative hash)
+D -> D : σ <- Sign(sk, h_α)
+D -> P : α, σ
+note left of D
+  sk held in tamper-resistant
+  hardware; pk published via
+  manufacturer trust list
+end note
+
+== Phase 3: Edit ==
+
+P -> P : β <- F(α; θ)\n(off-circuit, conventional software)
+note right of P
+  F drawn from the admitted
+  families; θ public
+end note
+
+== Phase 4: Parse ==
+
+P -> P : (α, f_s, b) <- Decode(wav)
+P -> P : E_α <- Parse(α, b, B)
+P -> P : E_β <- Parse(β, b, B)
+note right of P
+  k = floor(U/b) samples packed
+  per field element; B samples
+  per batch, c = ceil(n/B) batches
+end note
+
+== Phase 5: Prove ==
+
+P -> P : (π, h_α, h_β) <- Prove(E_α, E_β, F, θ)
+note right of P
+  c applications of step function S
+  from z_0 = (0,0), folded by IVC,
+  then compressed to succinct π.
+  E_α, E_β remain private.
+end note
+
+P -> V : β, π, h_α, σ, pk, (F, θ, b, B)
+
+== Phase 6-7: Verify ==
+
+V -> V : h*_β <- accumulate H over Parse(β, b, B)
+V -> V : v_π <- Verify_π(π, h_α, β, F, θ, b, B)
+V -> V : v_σ <- Verify_Σ(pk, h_α, σ)
+V -> V : accept iff Verify_Audio = v_π ∧ v_σ
+
+note over D, V
+  v_π: β is the image of some recording of digest h_α under F
+  v_σ: a recording of digest h_α was emitted by the device pk
+  Conjunction binds the published artefact to an attested capture.
+  α is never transmitted.
+end note
+
+@enduml

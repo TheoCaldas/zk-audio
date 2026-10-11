@@ -1,0 +1,123 @@
+@startuml audio_edit_proving_protocol
+
+hide footbox
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "Arial"
+skinparam defaultFontSize 12
+skinparam shadowing false
+skinparam roundCorner 10
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 210
+skinparam ParticipantPadding 30
+skinparam BoxPadding 20
+
+skinparam sequence {
+  ArrowColor #3D4451
+  ArrowFontColor #3D4451
+  ArrowFontSize 11
+  ArrowThickness 1.2
+
+  LifeLineBorderColor #3D4451
+  LifeLineBackgroundColor #F7F8FA
+
+  ParticipantBorderColor #3D4451
+  ParticipantBackgroundColor #FFFFFF
+  ParticipantFontColor #1A1D23
+  ParticipantFontSize 13
+  ParticipantFontStyle bold
+  ParticipantPadding 20
+
+  DividerBackgroundColor #d2e2f2
+  DividerBorderColor #d2e2f2
+  DividerBorderThickness 0
+  DividerFontColor #1A1D23
+  DividerFontSize 11
+  DividerFontStyle bold
+}
+
+skinparam note {
+  BackgroundColor #FBFBFC
+  BorderColor #D8DDE4
+  BorderThickness 1
+  FontColor #4A5160
+  FontSize 10
+}
+
+skinparam title {
+  FontSize 15
+  FontColor #1A1D23
+  FontStyle bold
+  BorderThickness 0
+}
+
+' title Verifiable Audio Editing Protocol
+
+participant "**Attesting Device**\n//Signer//" as D
+participant "**Editor**\n//Prover//" as P
+participant "**User**\n//Verifier//" as V
+
+== Signature Setup ==
+
+rnote over D : **(priv_k, pub_k) ← KeyGen(1^λ)**
+D --> V : <color:#1A1D23>**pub_k**</color>
+note right of D
+  priv_k held in tamper-resistant hardware;
+  pub_k published via manufacturer trust list
+end note
+
+== Attested capture ==
+
+rnote over D : capture audio stream α
+rnote over D : h_α ← accumulate H over α
+rnote over D : wav_α ← Encode(α)
+rnote over D : **σ ← Sign(priv_k, h_α)**
+D -> P : <color:#1A1D23>**wav_α, σ**</color>
+
+== Edit ==
+
+rnote over P : (α, f_s, b) ← Decode(wav_α)
+rnote over P : **β ← F(α; θ)**
+' note right of P
+'   Applied off-circuit and F and θ are public.
+' end note
+rnote over P : wav_β ← Encode(β)
+
+== Parse ==
+
+rnote over P : E_α ← Parse(α, b, B)
+rnote over P : E_β ← Parse(β, b, B)
+' note right of P
+'   k = ⌊U/b⌋ samples per field
+'   element; B samples per batch,
+'   c = ⌈n/B⌉ batches
+' end note
+
+== Prove ==
+
+rnote over P : **(π, h_α, h_β) ← Prove(E_α, E_β, F, θ)**
+note over P
+  Folded by IVC and compressed to a 
+  succinct π. E_α and E_β remain private.
+end note
+
+P -> V : <color:#1A1D23>**wav_β, π, σ, h_α, F, θ**</color>
+
+== Verify ==
+
+rnote over V : (β, f_s, b) ← Decode(wav_β)
+rnote over V : h*_β ← accumulate H over β
+rnote over V : **v_π ← Verify_π(π, h_α, h*_β, F, θ)**
+rnote over V : **v_σ ← Verify_Σ(pub_k, h_α, σ)**
+rnote over V : **Accepts ↔ v_π AND v_σ**
+
+note over D, V
+  **v_π** — β is the edited output of some recording of digest h_α under F;
+
+  **v_σ** — a recording of digest h_α was emitted by the device pub_k;
+
+  **Implication** — the conjunction binds the published edited recording, β, to an attested capture;
+  the original recording, α, itself is never transmitted.
+end note
+
+@enduml
