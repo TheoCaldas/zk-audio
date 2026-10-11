@@ -1,0 +1,20 @@
+Running test with witness generator: artifacts/claude_c_multiplier_batch_10_js/claude_c_multiplier_batch_10.wasm and group: pasta_curves::curves::Ep
+
+Loading JSON input from "serialized/claude_c_multiplier_batch_10_600.json"... 
+Number of iterations (batches): 4
+Batch size: 10
+
+Number of constraints per step (primary circuit): 22878
+Number of constraints per step (secondary circuit): 10347
+Number of variables per step (primary circuit): 22872
+Number of variables per step (secondary circuit): 10329
+Creating a RecursiveSNARK...
+RecursiveSNARK creation took 2.955311167s
+Verifying a RecursiveSNARK...
+RecursiveSNARK::verify: Ok(([0x01fc62a89680c5141426db961a75ac4364f027ed7f210eb20a48951102ee411d, 0x2b43c24221f1550254cd2ba561c9c3533383b82620fbb104883f87ba19184244], [0x0000000000000000000000000000000000000000000000000000000000000000])), took 107.798166ms
+Final original hash: 0x01fc62a89680c5141426db961a75ac4364f027ed7f210eb20a48951102ee411d
+Final edited hash: 0x2b43c24221f1550254cd2ba561c9c3533383b82620fbb104883f87ba19184244
+Generating a CompressedSNARK using Spartan with IPA-PC...
+CompressedSNARK::prove: true, took 19.639795042s
+Verifying a CompressedSNARK...
+CompressedSNARK::verify: true, took 146.365084ms
