@@ -1,70 +1,63 @@
-use zk_audio::{audio_editor, audio_parser::{self, WaveType}, circuit, signer};
+//! Single-run demo of the proving pipeline.
+//! For sweeps across B and N, use the benchmark suite:
+//!     cargo run --release --bin bench -- --max-n 6000
+
+use zk_audio::{
+    audio_parser,
+    bench::config::{comp_size_for, find_edit},
+    circuit,
+};
 
 fn main() {
     /* Inputs */
-    let sample_rate = 44100;
     let bit_depth = 16;
     let batch_size = 100;
-    let comp_size = 15;
     let max_size = 600000;
+    let edit_name = "gain2";
+    let input_name = "2c_44sr_16bd_01";
+
     // Naming convention: b = bit depth, B = batch size, N = total samples.
-    let circuit_prefix = "multiplier";
-    let circuit_name = &format!("{}_b{}_B{}", circuit_prefix, bit_depth, batch_size);
+    let comp_size = comp_size_for(bit_depth);
+    let edit = find_edit(edit_name).expect("unknown edit");
+
+    // One batch covers batch_size * comp_size samples; N must be a whole
+    // number of batches or the circuit rejects the short final one.
+    let samples_per_step = batch_size * comp_size;
+    assert_eq!(
+        max_size % samples_per_step,
+        0,
+        "N={} is not a multiple of {} samples/step (B={})",
+        max_size,
+        samples_per_step,
+        batch_size
+    );
+
+    let circuit_name = &format!("{}_b{}_B{}", edit.circuit_prefix, bit_depth, batch_size);
     let circuit_filepath = &format!("artifacts/{}.r1cs", circuit_name);
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
-    
-    /* Read Audio Samples */
-    let input_name = "2c_44sr_16bd_01";
-    let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
 
-    // /* Hash Samples */
-    // let original_hash = audio_parser::hex_poseidon_hash_chunks(
-    //     &audio_parser::compress_samples_bigint(original[0..max_size].to_vec())
-    // );
-    // println!("\nPoseidon hash of original compressed samples: {}\n", original_hash);
+    /* Read Audio Samples */
+    let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
+    assert!(
+        original.len() >= max_size,
+        "audio has {} samples, need {}",
+        original.len(),
+        max_size
+    );
+    let original = &original[0..max_size];
+
+    /* Apply Edit */
+    let edited = (edit.apply)(original, bit_depth);
 
     /* Serialize Samples */
     let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
     audio_parser::serialize_samples(
-        &original[0..max_size].to_vec(), 
-        &original[0..max_size].to_vec().iter().map(|x| x * 2).collect(),
-        batch_size * comp_size,
-        json_input_filepath
+        &original.to_vec(),
+        &edited,
+        samples_per_step,
+        json_input_filepath,
     );
 
     /* Test Circuit */
     circuit::run_test(circuit_filepath, witness_gen_filepath, json_input_filepath);
-    
-    /* Apply Transformations */
-    // // gain
-    // let output_name = &format!("output/{}_gain", input_name);
-    // let amount = 127;
-    // let edited = audio_editor::gain_multiplier(&original, amount).unwrap();
-    // audio_parser::write_file_16bits(
-    //     &format!("raw_audios/{}.wav", output_name),
-    //     &edited,
-    //     sample_rate,
-    //     WaveType::Stereo,
-    // );
-
-    // // distortion
-    // let output_name = &format!("output/{}_dist", input_name);
-    // let edited = audio_editor::distortion(&original);
-    // audio_parser::write_file_16bits(
-    //     &format!("raw_audios/{}.wav", output_name),
-    //     &edited,
-    //     sample_rate,
-    //     WaveType::Stereo,
-    // );
-
-    // // pitch shifter
-    // let output_name = &format!("output/{}_pshift", input_name);
-    // let edited = audio_editor::pitch_shifter(&original, 0.9, sample_rate as f32);
-    // audio_parser::write_file_16bits(
-    //     &format!("raw_audios/{}.wav", output_name),
-    //     &edited,
-    //     sample_rate,
-    //     WaveType::Stereo,
-    // );
-    
 }
