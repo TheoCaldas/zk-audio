@@ -88,6 +88,10 @@ impl Reporter {
                       numbers are not directly comparable.",
             "config": {
                 "max_n": cfg.max_n,
+                "durations_sec": cfg.durations,
+                "duration_sample_rate": cfg.sample_rate,
+                "duration_channels": cfg.channels,
+                "n_targets": crate::bench::config::n_targets(cfg),
                 "batch_sizes": cfg.batch_sizes,
                 "bit_depth": cfg.bit_depth,
                 "comp_size": crate::bench::config::comp_size_for(cfg.bit_depth),

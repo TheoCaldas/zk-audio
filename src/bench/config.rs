@@ -32,6 +32,32 @@ pub fn n_ladder(max_n: usize) -> Vec<usize> {
     v
 }
 
+/// Total samples in `seconds` of audio at `sample_rate` Hz across `channels`
+/// interleaved channels. This is the whole stream, both channels included,
+/// because that is what the circuit folds over: `read_samples` returns the
+/// interleaved frames, not per-channel ones.
+pub fn samples_for_duration(seconds: f64, sample_rate: usize, channels: usize) -> usize {
+    (seconds * sample_rate as f64 * channels as f64).round() as usize
+}
+
+/// The N values the suite will sweep. `--durations` takes precedence over the
+/// ladder: asking for wall-clock audio lengths means the 60*10^k steps are not
+/// what you want. Values are sorted ascending so cheap cases still run first.
+pub fn n_targets(cfg: &SuiteConfig) -> Vec<usize> {
+    if cfg.durations.is_empty() {
+        return n_ladder(cfg.max_n);
+    }
+    let mut v: Vec<usize> = cfg
+        .durations
+        .iter()
+        .map(|&d| samples_for_duration(d, cfg.sample_rate, cfg.channels))
+        .filter(|&n| n > 0)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 /// Pairs a Rust-side edit with the circuit family that enforces it. Both sides
 /// must implement the same relation; this struct is the only place that
 /// correspondence is recorded.
@@ -71,6 +97,12 @@ pub fn find_edit(name: &str) -> Option<EditSpec> {
 #[derive(Clone, Debug)]
 pub struct SuiteConfig {
     pub max_n: usize,
+    /// Audio durations in seconds to prove. Non-empty overrides the N ladder.
+    pub durations: Vec<f64>,
+    /// Sample rate and channel count used to turn a duration into a sample
+    /// count. Defaults match the project's 44.1 kHz stereo fixtures.
+    pub sample_rate: usize,
+    pub channels: usize,
     pub batch_sizes: Vec<usize>,
     pub bit_depth: usize,
     pub audio_input: String,
@@ -88,6 +120,9 @@ impl Default for SuiteConfig {
     fn default() -> Self {
         SuiteConfig {
             max_n: 0, // required: no sensible default, the cap drives runtime
+            durations: Vec::new(),
+            sample_rate: 44100,
+            channels: 2,
             batch_sizes: vec![10, 40, 100, 200],
             bit_depth: 16,
             audio_input: "raw_audios/2c_44sr_16bd_01.wav".to_string(),
@@ -168,7 +203,7 @@ pub fn generate_cases(cfg: &SuiteConfig, available_samples: usize, prefix: &str)
 
     // Ascending cost: N outer (dominates runtime), B inner. Cheap cells
     // validate the pipeline before expensive ones commit hours.
-    for n in n_ladder(cfg.max_n) {
+    for n in n_targets(cfg) {
         for &b in &batch_sizes {
             let spb = b * comp;
             let circuit_name = format!("{}_b{}_B{}", prefix, cfg.bit_depth, b);
@@ -275,6 +310,56 @@ mod tests {
                 if n >= spb {
                     assert_eq!(n % spb, 0, "B={} does not divide N={}", b, n);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn duration_to_samples_counts_every_channel() {
+        // 16-bit 44.1 kHz stereo: 88200 samples per second of audio.
+        assert_eq!(samples_for_duration(10.0, 44100, 2), 882_000);
+        assert_eq!(samples_for_duration(30.0, 44100, 2), 2_646_000);
+        assert_eq!(samples_for_duration(60.0, 44100, 2), 5_292_000);
+        assert_eq!(samples_for_duration(120.0, 44100, 2), 10_584_000);
+        assert_eq!(samples_for_duration(1.0, 44100, 1), 44_100);
+    }
+
+    #[test]
+    fn durations_override_the_ladder() {
+        let cfg = SuiteConfig {
+            max_n: 600,
+            durations: vec![10.0, 30.0],
+            ..Default::default()
+        };
+        // The ladder cap is ignored entirely once durations are given.
+        assert_eq!(n_targets(&cfg), vec![882_000, 2_646_000]);
+    }
+
+    #[test]
+    fn durations_are_sorted_and_deduped() {
+        let cfg = SuiteConfig {
+            max_n: 0,
+            durations: vec![30.0, 10.0, 30.0],
+            ..Default::default()
+        };
+        assert_eq!(n_targets(&cfg), vec![882_000, 2_646_000]);
+    }
+
+    #[test]
+    fn empty_durations_fall_back_to_ladder() {
+        let cfg = SuiteConfig { max_n: 6000, ..Default::default() };
+        assert_eq!(n_targets(&cfg), vec![60, 600, 6000]);
+    }
+
+    #[test]
+    fn requested_durations_divide_the_usable_batch_sizes() {
+        // Why these four durations are clean: every one is a whole number of
+        // steps at every usable B, so none of them skip as NotDivisible.
+        let comp = comp_size_for(16);
+        for secs in [10.0, 30.0, 60.0, 120.0] {
+            let n = samples_for_duration(secs, 44100, 2);
+            for &b in &[10usize, 40, 100, 200] {
+                assert_eq!(n % (b * comp), 0, "B={} does not divide {}s (N={})", b, secs, n);
             }
         }
     }

@@ -12,12 +12,18 @@ zk-audio benchmark suite
 
 USAGE:
     cargo run --release --bin bench -- --max-n <N> [OPTIONS]
+    cargo run --release --bin bench -- --durations <secs,...> [OPTIONS]
 
-REQUIRED:
+REQUIRED (one of):
     --max-n <N>              Cap for the N ladder (60, 600, 6000, ...).
                              Drives total runtime, so there is no default.
+    --durations <list>       Comma-separated audio durations in SECONDS.
+                             N is computed as secs * sample-rate * channels,
+                             replacing the ladder entirely. Fractions allowed.
 
 OPTIONS:
+    --sample-rate <hz>       Rate assumed by --durations  [default: 44100]
+    --channels <n>           Channels assumed by --durations        [default: 2]
     --batch-sizes <list>     Comma-separated B values    [default: 10,40,100,200]
     --bit-depth <n>          Sample bit depth            [default: 16]
     --input <path>           WAV input
@@ -33,6 +39,11 @@ OPTIONS:
 NOTES:
     A clean case needs N divisible by B * comp_size (comp_size = 15 at b=16).
     B=150 never divides the 6*10^k ladder; use B in {10,40,100,200}.
+
+    --durations counts every channel, since the circuit folds over the
+    interleaved stream: 1 s of 44.1 kHz stereo is 88200 samples, not 44100.
+    It errors out if the WAV's real rate/channels disagree with the assumed
+    ones, rather than quietly proving a different length than reported.
 ";
 
 fn main() {
@@ -72,6 +83,41 @@ fn parse(args: &[String]) -> Result<SuiteConfig, String> {
             "--max-n" => {
                 cfg.max_n = parse_usize(next(args, &mut i, arg)?, arg)?;
                 saw_max_n = true;
+            }
+            "--durations" => {
+                let raw = next(args, &mut i, arg)?;
+                let mut v = Vec::new();
+                for part in raw.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let d = part
+                        .parse::<f64>()
+                        .map_err(|_| format!("{}: '{}' is not a number", arg, part))?;
+                    if !d.is_finite() || d <= 0.0 {
+                        return Err("--durations entries must be positive".to_string());
+                    }
+                    v.push(d);
+                }
+                if v.is_empty() {
+                    return Err("--durations needs at least one value".to_string());
+                }
+                cfg.durations = v;
+            }
+            "--sample-rate" => {
+                let sr = parse_usize(next(args, &mut i, arg)?, arg)?;
+                if sr == 0 {
+                    return Err("--sample-rate must be > 0".to_string());
+                }
+                cfg.sample_rate = sr;
+            }
+            "--channels" => {
+                let ch = parse_usize(next(args, &mut i, arg)?, arg)?;
+                if ch == 0 {
+                    return Err("--channels must be > 0".to_string());
+                }
+                cfg.channels = ch;
             }
             "--batch-sizes" => {
                 let raw = next(args, &mut i, arg)?;
@@ -129,10 +175,13 @@ fn parse(args: &[String]) -> Result<SuiteConfig, String> {
         i += 1;
     }
 
-    if !saw_max_n {
-        return Err("--max-n is required".to_string());
+    if !saw_max_n && cfg.durations.is_empty() {
+        return Err("--max-n or --durations is required".to_string());
     }
-    if cfg.max_n < 60 {
+    if saw_max_n && !cfg.durations.is_empty() {
+        return Err("--max-n and --durations are mutually exclusive".to_string());
+    }
+    if saw_max_n && cfg.max_n < 60 {
         return Err("--max-n must be at least 60 (the first ladder step)".to_string());
     }
 

@@ -35,6 +35,38 @@ Everything revolves around two numbers:
 
 The suite sweeps every valid combination of the two.
 
+### Two ways to choose N
+
+**By sample count** (`--max-n`) — the ladder, below.
+
+**By audio duration** (`--durations`) — when the x-axis you want is seconds of
+audio rather than abstract sample counts:
+
+```bash
+./target/release/bench --durations 10,30,60,120 \
+    --input raw_audios/sweep_120s_2c_44sr_16bd.wav \
+    --batch-sizes 100 --repeat 1
+```
+
+N is computed as `seconds × sample-rate × channels` and **replaces the ladder
+entirely**. The two flags are mutually exclusive.
+
+`--sample-rate` (default 44100) and `--channels` (default 2) define the
+conversion. Both count toward N, because the circuit folds over the
+**interleaved** stream — one second of 44.1 kHz stereo is 88,200 samples, not
+44,100. The suite refuses to run if the WAV's real format disagrees with the
+assumed one, rather than quietly proving a different length than it reports.
+
+| Duration | N (44.1 kHz stereo) | iters at B=100 |
+|---|---|---|
+| 10 s | 882,000 | 588 |
+| 30 s | 2,646,000 | 1,764 |
+| 1 min | 5,292,000 | 3,528 |
+| 2 min | 10,584,000 | 7,056 |
+
+All four divide cleanly by every usable B, so none of them skip. Durations are
+sorted ascending, so cheap cases still run first.
+
 ### N follows a fixed ladder
 
 N always steps `60 → 600 → 6000 → 60000 → …`. You only choose where it stops:
@@ -74,7 +106,10 @@ dry-run first.**
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--max-n <N>` | **required** | Where the N ladder stops |
+| `--max-n <N>` | **required\*** | Where the N ladder stops |
+| `--durations <list>` | — | Audio lengths in seconds; replaces the ladder |
+| `--sample-rate <hz>` | `44100` | Rate assumed by `--durations` |
+| `--channels <n>` | `2` | Channels assumed by `--durations` |
 | `--batch-sizes <list>` | `10,40,100,200` | Comma-separated B values |
 | `--bit-depth <n>` | `16` | Only 16 is compiled today |
 | `--input <path>` | `raw_audios/2c_44sr_16bd_01.wav` | WAV to prove over |
@@ -85,6 +120,8 @@ dry-run first.**
 | `--no-cache-inputs` | off | Delete each serialized JSON after use |
 | `--dry-run` | off | Print the matrix and exit |
 | `-h`, `--help` | | Show usage |
+
+\* Either `--max-n` or `--durations` is required, not both.
 
 ---
 
@@ -115,6 +152,15 @@ dry-run first.**
 ./target/release/bench --max-n 600000
 ```
 
+**Duration scaling, 10 s to 2 min** (~5.5 h) — the real-audio-length axis
+```bash
+./target/release/bench --durations 10,30,60,120 \
+    --input raw_audios/sweep_120s_2c_44sr_16bd.wav \
+    --batch-sizes 100 --repeat 1 --no-cache-inputs
+```
+`--no-cache-inputs` matters here: the N=10,584,000 serialized JSON is ~100 MB,
+and keeping all four costs ~180 MB of disk.
+
 **Disk-constrained** — the N=600000 inputs are ~5.8 MB each
 ```bash
 ./target/release/bench --max-n 600000 --no-cache-inputs
@@ -142,6 +188,20 @@ Whole-sweep totals over all four B values:
 | 6 000 | ~40 s | ~2 min |
 | 60 000 | ~3 min | ~9 min |
 | 600 000 | ~25 min | ~70 min |
+
+Duration-based cells at B=100, extrapolated from the ~274 µs/sample measured
+above (`--repeat 1`):
+
+| Duration | N | Expected prove |
+|---|---|---|
+| 10 s | 882,000 | ~4 min |
+| 30 s | 2,646,000 | ~12 min |
+| 1 min | 5,292,000 | ~24 min |
+| 2 min | 10,584,000 | ~48 min |
+
+Roughly 1.5 h for all four, plus serialization overhead — budget ~5 h, since
+writing and witness-generating a 100 MB input is itself significant at this
+scale.
 
 `--skip-compressed` cuts a large share of this at small N, where the fixed
 compression cost dominates.
@@ -255,8 +315,25 @@ gap in a table always has an explanation attached.
 ```
 
 Must be 16-bit WAV. Cells needing more samples than the file has are skipped as
-`InsufficientAudio` rather than crashing. The current default fixture holds
-705,600 samples — enough for N=600000, not for N=6000000.
+`InsufficientAudio` rather than crashing.
+
+| Fixture | Format | Samples | Duration |
+|---|---|---|---|
+| `2c_44sr_16bd_01.wav` (default) | 44.1 kHz stereo | 705,600 | 8 s |
+| `sweep_120s_2c_44sr_16bd.wav` | 44.1 kHz stereo | 11,025,000 | 125 s |
+| `test_48.16.01.wav` | 48 kHz stereo | 384,000 | 4 s |
+| `test_12.16.01.wav` | 12 kHz stereo | 96,000 | 4 s |
+
+The default fixture covers N up to 600,000 but **not** any of the duration
+targets — the shortest, 10 s, already needs 882,000 samples. Use
+`sweep_120s_2c_44sr_16bd.wav` for duration runs; it is a deterministic
+80 Hz→4 kHz log sweep plus dither, regenerable bit-identically with
+[docs/gen_bench_fixture.py](gen_bench_fixture.py).
+
+Its amplitude is capped at ±8000 (about a quarter of full scale) **on purpose**:
+`gain2` is `x * 2` with no clamping on either side, so samples near full scale
+would overflow `i16` in Rust and stop matching what the circuit enforces. Any
+fixture you add for `gain2` needs the same headroom.
 
 ### Different edit
 
