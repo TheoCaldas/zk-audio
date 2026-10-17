@@ -14,8 +14,8 @@ use crate::bench::report::{print_matrix, EnvInfo, Reporter, ResultRow};
 use crate::circuit::{self, CaseMeta, MultiplierInput, RunConfig};
 
 pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
-    if cfg.max_n == 0 {
-        return Err("--max-n is required (it drives total runtime)".to_string());
+    if cfg.max_n == 0 && cfg.durations.is_empty() {
+        return Err("--max-n or --durations is required (either drives total runtime)".to_string());
     }
     if !SUPPORTED_BIT_DEPTHS.contains(&cfg.bit_depth) {
         return Err(format!(
@@ -43,6 +43,19 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
     let original = audio_parser::read_samples(&cfg.audio_input);
     let available = original.len();
     println!("Available samples: {}", available);
+
+    if !cfg.durations.is_empty() {
+        let (ch, sr) = audio_meta(&cfg.audio_input);
+        if ch != 0 && (ch as usize != cfg.channels || sr as usize != cfg.sample_rate) {
+            // A duration is only meaningful against the real format; silently
+            // proving the wrong number of samples would misreport the x-axis.
+            return Err(format!(
+                "--durations assumes {} Hz / {} ch but {} is {} Hz / {} ch; \
+                 pass --sample-rate {} --channels {} or a matching file",
+                cfg.sample_rate, cfg.channels, cfg.audio_input, sr, ch, sr, ch
+            ));
+        }
+    }
 
     let comp = comp_size_for(cfg.bit_depth);
     let cases = generate_cases(cfg, available, edit.circuit_prefix);

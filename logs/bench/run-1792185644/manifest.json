@@ -1,0 +1,54 @@
+{
+  "audio": {
+    "channels": 2,
+    "note": "samples are interleaved channels as a flat vector",
+    "path": "raw_audios/sweep_120s_2c_44sr_16bd.wav",
+    "sample_rate": 44100,
+    "total_samples": 11025000
+  },
+  "cases": {
+    "runnable": 4,
+    "total": 4
+  },
+  "config": {
+    "audio_input": "raw_audios/sweep_120s_2c_44sr_16bd.wav",
+    "batch_sizes": [
+      100
+    ],
+    "bit_depth": 16,
+    "cache_inputs": false,
+    "comp_size": 15,
+    "duration_channels": 2,
+    "duration_sample_rate": 44100,
+    "durations_sec": [
+      10.0,
+      30.0,
+      60.0,
+      120.0
+    ],
+    "edit": "gain2",
+    "max_n": 0,
+    "n_targets": [
+      882000,
+      2646000,
+      5292000,
+      10584000
+    ],
+    "repeat": 1,
+    "skip_compressed": false
+  },
+  "environment": {
+    "arch": "aarch64",
+    "circom": "circom compiler 2.2.2",
+    "cores": "10",
+    "cpu": "Apple M2 Pro",
+    "debug_build": false,
+    "git_dirty": true,
+    "git_sha": "2507f4b86a4bc094ecbd3a4cd42fb23f89296992",
+    "os": "macos",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11) (Homebrew)"
+  },
+  "notes": "compressed_prove_ms EXCLUDES CompressedSNARK::setup (measured as compressed_setup_ms). Logs predating schema_version 2 reported setup+prove summed, so those numbers are not directly comparable.",
+  "schema_version": 2,
+  "started_at": "run-1792185644"
+}
