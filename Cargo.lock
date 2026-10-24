@@ -1941,6 +1941,7 @@ dependencies = [
  "hound",
  "itertools 0.9.0",
  "k256",
+ "libc",
  "light-poseidon",
  "nova-scotia",
  "nova-snark",

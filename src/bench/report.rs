@@ -108,6 +108,19 @@ impl Reporter {
                 "sample_rate": env.audio_sample_rate,
                 "note": "samples are interleaved channels as a flat vector",
             },
+            "memory": {
+                "supported": crate::bench::memory::is_supported(),
+                "sample_interval_ms": crate::bench::memory::SAMPLE_INTERVAL.as_millis(),
+                "note": "peak_rss_* are PROCESS-WIDE and SAMPLED: they include \
+                         the wasm witness generator and anything else the \
+                         binary holds, and a spike shorter than the sample \
+                         interval can be missed, so each value is a LOWER \
+                         BOUND on the true peak. Figures assume an \
+                         otherwise-idle machine; concurrent load on the same \
+                         process would inflate them. RSS is resident pages, \
+                         which the OS may reclaim under pressure - it is a \
+                         measurement of this run, not a minimum spec.",
+            },
             "environment": {
                 "git_sha": env.git_sha,
                 "git_dirty": env.git_dirty,
@@ -168,7 +181,20 @@ impl Reporter {
             SCHEMA_VERSION, cfg.edit, cfg.audio_input, cfg.bit_depth, cfg.repeat
         ));
         s.push_str(
-            "`compressed_prove_ms` excludes `CompressedSNARK::setup`; see manifest.json.\n\n",
+            "`compressed_prove_ms` excludes `CompressedSNARK::setup`; see manifest.json.
+
+Peak RSS is **process-wide and sampled** (every 50ms): it includes the wasm
+witness generator's allocations and anything else the binary holds, and a spike
+shorter than the sampling interval can be missed — so each figure is a lower
+bound on the true peak. Figures assume an otherwise-idle machine.
+
+Compare the **absolute** peaks: they reproduce across runs (the same N=6000/B=100
+cell measured 877.7MB alone and 854.9MB as the third case of a sweep, 2.6%
+apart). The *over baseline* row does NOT reproduce — the allocator keeps freed
+pages, so a case running later in a sweep starts from a higher baseline and
+reports a smaller delta for identical work (35.9MB vs 344.7MB baseline for that
+same cell). It is listed for completeness, not for comparison; to measure one
+cell's own footprint, run it alone.\n\n",
         );
 
         let metrics = self.metrics();
@@ -240,6 +266,42 @@ impl Reporter {
                 "ms per iteration (prove)",
                 Box::new(|g: &[&ProofMetrics]| {
                     fmt_med(g.iter().map(|m| m.ms_per_iteration()).collect())
+                }),
+            ),
+            (
+                "Peak RSS, whole proof (MB)",
+                Box::new(|g: &[&ProofMetrics]| {
+                    let v: Vec<f64> = g.iter().filter_map(|m| m.peak_rss_mb()).collect();
+                    if v.is_empty() { "n/a".to_string() } else { fmt_med(v) }
+                }),
+            ),
+            (
+                "Peak RSS during folding (MB)",
+                Box::new(|g: &[&ProofMetrics]| {
+                    let v: Vec<f64> = g
+                        .iter()
+                        .filter_map(|m| m.peak_rss_recursive_prove_bytes)
+                        .map(crate::bench::memory::to_mb)
+                        .collect();
+                    if v.is_empty() { "n/a".to_string() } else { fmt_med(v) }
+                }),
+            ),
+            (
+                "Peak RSS during compression (MB)",
+                Box::new(|g: &[&ProofMetrics]| {
+                    let v: Vec<f64> = g
+                        .iter()
+                        .filter_map(|m| m.peak_rss_compressed_prove_bytes)
+                        .map(crate::bench::memory::to_mb)
+                        .collect();
+                    if v.is_empty() { "n/a".to_string() } else { fmt_med(v) }
+                }),
+            ),
+            (
+                "Peak RSS over baseline (MB)",
+                Box::new(|g: &[&ProofMetrics]| {
+                    let v: Vec<f64> = g.iter().filter_map(|m| m.peak_rss_delta_mb()).collect();
+                    if v.is_empty() { "n/a".to_string() } else { fmt_med(v) }
                 }),
             ),
         ];

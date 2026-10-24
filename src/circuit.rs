@@ -4,6 +4,8 @@ use nova_scotia::{
     circom::reader::load_r1cs, create_public_params, create_recursive_circuit, FileLocation, F, S,
 };
 use nova_snark::{CompressedSNARK, PublicParams};
+
+use crate::bench::memory::{self, PeakSampler};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -56,6 +58,19 @@ pub struct ProofMetrics {
     pub proof_size_bytes: usize,
     pub final_hash_original: String,
     pub final_hash_edited: String,
+
+    /// Peak process RSS, in bytes, sampled during each phase and overall.
+    ///
+    /// `None` where the platform offers no RSS query, so a missing figure is
+    /// distinguishable from a measured zero. These are PROCESS-WIDE and
+    /// SAMPLED: they include the wasm witness generator's allocations, and a
+    /// spike shorter than the sampling interval can be missed, making each
+    /// value a lower bound. See `bench::memory`.
+    pub peak_rss_bytes: Option<u64>,
+    pub rss_baseline_bytes: Option<u64>,
+    pub peak_rss_public_params_bytes: Option<u64>,
+    pub peak_rss_recursive_prove_bytes: Option<u64>,
+    pub peak_rss_compressed_prove_bytes: Option<u64>,
 }
 
 impl ProofMetrics {
@@ -74,6 +89,47 @@ impl ProofMetrics {
             return 0.0;
         }
         self.recursive_prove_ms / self.iterations as f64
+    }
+
+    /// Peak RSS in MB, if measured.
+    pub fn peak_rss_mb(&self) -> Option<f64> {
+        self.peak_rss_bytes.map(crate::bench::memory::to_mb)
+    }
+
+    /// Peak RSS above the pre-proof baseline, in MB.
+    ///
+    /// **Treat this as indicative only.** The baseline is whatever was
+    /// resident when this case started, and the allocator does not return
+    /// freed pages to the OS between cases, so a case that runs later in a
+    /// sweep sees an inflated baseline and reports a smaller delta for
+    /// identical work. Measured: the same (N=6000, B=100) cell reported a
+    /// 35.9MB baseline when run alone and 344.7MB as the third case in a
+    /// sweep, while its absolute peak differed by only 2.6%.
+    ///
+    /// Use [`peak_rss_mb`](Self::peak_rss_mb) for comparisons; it is the
+    /// figure that reproduces.
+    pub fn peak_rss_delta_mb(&self) -> Option<f64> {
+        match (self.peak_rss_bytes, self.rss_baseline_bytes) {
+            (Some(peak), Some(base)) => {
+                Some(crate::bench::memory::to_mb(peak.saturating_sub(base)))
+            }
+            _ => None,
+        }
+    }
+
+    /// Peak RSS divided by the fold count, in MB.
+    ///
+    /// Inherits the baseline caveat from
+    /// [`peak_rss_delta_mb`](Self::peak_rss_delta_mb) and is NOT a per-step
+    /// working-set figure: Nova reuses one step's allocation across folds,
+    /// so the true per-step cost does not scale with the fold count at all.
+    /// Dividing by `iterations` is therefore expected to FALL as N grows -
+    /// that decline is the flatness, not a trend in memory.
+    pub fn peak_rss_per_iteration_mb(&self) -> Option<f64> {
+        if self.iterations == 0 {
+            return None;
+        }
+        self.peak_rss_delta_mb().map(|mb| mb / self.iterations as f64)
     }
 
     pub fn constraints_per_sample(&self) -> f64 {
@@ -209,9 +265,16 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
 
     let start_public_input = [F::<G1>::from(0), F::<G1>::from(0)];
 
+    // Baseline taken after inputs are parsed and before any proving work,
+    // so the per-phase deltas attribute memory to proving rather than to
+    // the ~100MB of parsed JSON the suite already holds.
+    let rss_baseline_bytes = memory::current_rss_bytes();
+
+    let sampler = PeakSampler::start();
     let start = Instant::now();
     let pp: PublicParams<G1, G2, _, _> = create_public_params(r1cs.clone());
     let public_params_ms = ms(start.elapsed());
+    let peak_rss_public_params_bytes = sampler.stop();
 
     if cfg.verbose {
         println!(
@@ -233,6 +296,10 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         println!("Creating a RecursiveSNARK...");
     }
 
+    // The folding loop is where the peak almost always lands, and it is
+    // entirely inside this one call - including the wasm witness generator
+    // it drives per step - so sampling is the only way to see it.
+    let sampler = PeakSampler::start();
     let start = Instant::now();
     let recursive_snark = create_recursive_circuit(
         FileLocation::PathBuf(witness_generator_file),
@@ -243,9 +310,13 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     )
     .map_err(|e| ProofError::Prove(format!("{:?}", e)))?;
     let recursive_prove_ms = ms(start.elapsed());
+    let peak_rss_recursive_prove_bytes = sampler.stop();
 
     if cfg.verbose {
         println!("RecursiveSNARK creation took {:.3}s", recursive_prove_ms / 1000.0);
+        if let Some(p) = peak_rss_recursive_prove_bytes {
+            println!("Peak RSS during folding: {:.1} MB", memory::to_mb(p));
+        }
     }
 
     let z0_secondary = [F::<G2>::from(0)];
@@ -272,11 +343,18 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     let mut compressed_prove_ms = 0.0;
     let mut compressed_verify_ms = 0.0;
     let mut proof_size_bytes = 0;
+    let mut peak_rss_compressed_prove_bytes = None;
 
     if !cfg.skip_compressed {
         if cfg.verbose {
             println!("Generating a CompressedSNARK using Spartan with IPA-PC...");
         }
+
+        // Sampled across setup AND prove: `setup` materializes the prover
+        // key, which stays resident through `prove`, so splitting the two
+        // would attribute that allocation to whichever ran first rather
+        // than reporting the real high-water mark of the phase.
+        let sampler = PeakSampler::start();
 
         let start = Instant::now();
         let (pk, vk) = CompressedSNARK::<_, _, _, _, S<G1>, S<G2>>::setup(&pp)
@@ -288,6 +366,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
             CompressedSNARK::<_, _, _, _, S<G1>, S<G2>>::prove(&pp, &pk, &recursive_snark)
                 .map_err(|e| ProofError::CompressedProve(format!("{:?}", e)))?;
         compressed_prove_ms = ms(start.elapsed());
+        peak_rss_compressed_prove_bytes = sampler.stop();
 
         proof_size_bytes = serde_json::to_vec(&compressed_snark).map(|v| v.len()).unwrap_or(0);
 
@@ -309,6 +388,9 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
 
         if cfg.verbose {
             println!("CompressedSNARK::verify took {:?}ms", compressed_verify_ms);
+            if let Some(p) = peak_rss_compressed_prove_bytes {
+                println!("Peak RSS during compression: {:.1} MB", memory::to_mb(p));
+            }
         }
     }
 
@@ -328,6 +410,18 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         proof_size_bytes,
         final_hash_original,
         final_hash_edited,
+        peak_rss_bytes: [
+            peak_rss_public_params_bytes,
+            peak_rss_recursive_prove_bytes,
+            peak_rss_compressed_prove_bytes,
+        ]
+        .into_iter()
+        .flatten()
+        .max(),
+        rss_baseline_bytes,
+        peak_rss_public_params_bytes,
+        peak_rss_recursive_prove_bytes,
+        peak_rss_compressed_prove_bytes,
     })
 }
 

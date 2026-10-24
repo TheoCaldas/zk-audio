@@ -26,4 +26,5 @@ hex = "0.4.3"
 ark-bn254 = "0.5"
 ark-ff = "0.5"
 light-poseidon = "0.4"
+libc = "0.2"
 
