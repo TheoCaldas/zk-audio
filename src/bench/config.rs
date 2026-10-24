@@ -16,7 +16,7 @@ pub fn offset_for(bit_depth: usize) -> i64 {
 
 /// Bit depths with a compiled step circuit. Only 16 for now; the rest of the
 /// pipeline is parameterized so adding one is a config change plus a circuit.
-pub const SUPPORTED_BIT_DEPTHS: &[usize] = &[16];
+pub const SUPPORTED_BIT_DEPTHS: &[usize] = &[8, 16];
 
 /// N ladder: 60, 600, 6000, ... capped at `max_n`.
 pub fn n_ladder(max_n: usize) -> Vec<usize> {
@@ -44,6 +44,16 @@ pub fn samples_for_duration(seconds: f64, sample_rate: usize, channels: usize) -
 /// ladder: asking for wall-clock audio lengths means the 60*10^k steps are not
 /// what you want. Values are sorted ascending so cheap cases still run first.
 pub fn n_targets(cfg: &SuiteConfig) -> Vec<usize> {
+    // An explicit list wins over everything: at bit depths whose
+    // comp_size does not divide the 60*10^k ladder (bd=8 packs 31
+    // samples per element, so a B=10 step covers 310), the ladder
+    // produces no runnable cases at all.
+    if !cfg.n_list.is_empty() {
+        let mut v = cfg.n_list.clone();
+        v.sort_unstable();
+        v.dedup();
+        return v;
+    }
     if cfg.durations.is_empty() {
         return n_ladder(cfg.max_n);
     }
@@ -61,10 +71,21 @@ pub fn n_targets(cfg: &SuiteConfig) -> Vec<usize> {
 /// Pairs a Rust-side edit with the circuit family that enforces it. Both sides
 /// must implement the same relation; this struct is the only place that
 /// correspondence is recorded.
+///
+/// `clamps` records whether the circuit family enforces saturation. The
+/// `gain2` family does NOT (it is pure arithmetic and relies on the audio
+/// having headroom), while the generalized `gain` family does. The suite
+/// uses this to decide whether full-scale audio is safe to prove.
 pub struct EditSpec {
     pub name: &'static str,
     pub circuit_prefix: &'static str,
     pub apply: fn(&[i16], usize) -> Vec<i16>,
+    /// Gain factor k, for the generalized family. `None` for edits whose
+    /// circuit does not take a factor.
+    pub factor: Option<u32>,
+    pub clamps: bool,
+    /// Bit depths this edit has compiled circuits for.
+    pub bit_depths: &'static [usize],
 }
 
 /// `gain2`: the relation `multiplier_step_b16.circom` proves is
@@ -79,12 +100,68 @@ fn gain2(original: &[i16], _bit_depth: usize) -> Vec<i16> {
     original.iter().map(|x| x * 2).collect()
 }
 
+/// The generalized, clamping gain. Unlike `gain2` this IS
+/// `audio_editor::gain` — the circuit saturates too, so the clamping
+/// reference is now the correct mirror rather than a mismatch.
+fn clamped_gain(original: &[i16], bit_depth: usize, k: u32) -> Vec<i16> {
+    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    crate::audio_editor::gain(&wide, k, bit_depth as u32)
+        .expect("gain factor and sample range validated by the suite")
+        .into_iter()
+        .map(|s| s as i16)
+        .collect()
+}
+
+fn gain_k2(original: &[i16], bit_depth: usize) -> Vec<i16> {
+    clamped_gain(original, bit_depth, 2)
+}
+fn gain_k3(original: &[i16], bit_depth: usize) -> Vec<i16> {
+    clamped_gain(original, bit_depth, 3)
+}
+fn gain_k4(original: &[i16], bit_depth: usize) -> Vec<i16> {
+    clamped_gain(original, bit_depth, 4)
+}
+
 pub fn registry() -> Vec<EditSpec> {
-    vec![EditSpec {
-        name: "gain2",
-        circuit_prefix: "multiplier",
-        apply: gain2,
-    }]
+    vec![
+        // The original relation, kept unchanged as the benchmark baseline.
+        // No clamping: `x * 2` must not overflow, so the audio needs
+        // headroom. See docs/duration_scaling_conclusions.md.
+        EditSpec {
+            name: "gain2",
+            circuit_prefix: "multiplier",
+            apply: gain2,
+            factor: Some(2),
+            clamps: false,
+            bit_depths: &[16],
+        },
+        // Generalized family: any integer k > 1, saturating at the limits
+        // of the bit depth, at 8 or 16 bits.
+        EditSpec {
+            name: "gain_k2",
+            circuit_prefix: "gain",
+            apply: gain_k2,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8, 16],
+        },
+        EditSpec {
+            name: "gain_k3",
+            circuit_prefix: "gain",
+            apply: gain_k3,
+            factor: Some(3),
+            clamps: true,
+            bit_depths: &[16],
+        },
+        EditSpec {
+            name: "gain_k4",
+            circuit_prefix: "gain",
+            apply: gain_k4,
+            factor: Some(4),
+            clamps: true,
+            bit_depths: &[8, 16],
+        },
+    ]
     // Not yet available: `distortion` (dist_step.circom unfinished, sign
     // handling commented out) and `pitch_shifter` (floating point, needs a
     // fixed-point redesign before it maps to a field relation).
@@ -99,6 +176,10 @@ pub struct SuiteConfig {
     pub max_n: usize,
     /// Audio durations in seconds to prove. Non-empty overrides the N ladder.
     pub durations: Vec<f64>,
+    /// Explicit sample counts. Non-empty overrides both the ladder and
+    /// `durations` — the escape hatch for depths whose samples-per-step
+    /// does not divide the ladder.
+    pub n_list: Vec<usize>,
     /// Sample rate and channel count used to turn a duration into a sample
     /// count. Defaults match the project's 44.1 kHz stereo fixtures.
     pub sample_rate: usize,
@@ -121,6 +202,7 @@ impl Default for SuiteConfig {
         SuiteConfig {
             max_n: 0, // required: no sensible default, the cap drives runtime
             durations: Vec::new(),
+            n_list: Vec::new(),
             sample_rate: 44100,
             channels: 2,
             batch_sizes: vec![10, 40, 100, 200],
@@ -194,7 +276,30 @@ impl Case {
 
 /// Builds the full case matrix with skip reasons resolved up front, so a long
 /// sweep can be inspected before it starts.
-pub fn generate_cases(cfg: &SuiteConfig, available_samples: usize, prefix: &str) -> Vec<Case> {
+/// Builds the compiled-artifact stem for an edit at a given depth and batch
+/// size. The two families name their artifacts differently, because the
+/// generalized one is parameterized by the gain factor as well:
+///
+///   gain2 (baseline):  multiplier_b16_B100
+///   gain  (general):   gain_b16_k3_B100
+pub fn circuit_name_for(
+    prefix: &str,
+    factor: Option<u32>,
+    bit_depth: usize,
+    batch_size: usize,
+) -> String {
+    match (prefix, factor) {
+        ("gain", Some(k)) => format!("gain_b{}_k{}_B{}", bit_depth, k, batch_size),
+        _ => format!("{}_b{}_B{}", prefix, bit_depth, batch_size),
+    }
+}
+
+pub fn generate_cases(
+    cfg: &SuiteConfig,
+    available_samples: usize,
+    prefix: &str,
+    factor: Option<u32>,
+) -> Vec<Case> {
     let comp = comp_size_for(cfg.bit_depth);
     let mut cases = Vec::new();
 
@@ -206,7 +311,7 @@ pub fn generate_cases(cfg: &SuiteConfig, available_samples: usize, prefix: &str)
     for n in n_targets(cfg) {
         for &b in &batch_sizes {
             let spb = b * comp;
-            let circuit_name = format!("{}_b{}_B{}", prefix, cfg.bit_depth, b);
+            let circuit_name = circuit_name_for(prefix, factor, cfg.bit_depth, b);
             let r1cs_path = format!("{}/{}.r1cs", cfg.artifacts_dir, circuit_name);
             let wasm_path = format!(
                 "{}/{}_js/{}.wasm",
@@ -365,6 +470,30 @@ mod tests {
     }
 
     #[test]
+    fn n_list_overrides_ladder_and_durations() {
+        let cfg = SuiteConfig {
+            max_n: 6000,
+            durations: vec![10.0],
+            n_list: vec![3100, 310, 620, 310],
+            ..Default::default()
+        };
+        assert_eq!(n_targets(&cfg), vec![310, 620, 3100]);
+    }
+
+    #[test]
+    fn eight_bit_step_never_divides_the_ladder() {
+        // bd=8 packs 31 samples/element, so a B=10 step covers 310 and no
+        // 60*10^k value is a whole number of steps. This is why --n-list
+        // exists.
+        let comp = comp_size_for(8);
+        assert_eq!(comp, 31);
+        for n in n_ladder(600000) {
+            let spb = 10 * comp;
+            assert!(n < spb || n % spb != 0, "N={} unexpectedly divides {}", n, spb);
+        }
+    }
+
+    #[test]
     fn skips_are_classified() {
         let cfg = SuiteConfig {
             max_n: 600,
@@ -372,7 +501,7 @@ mod tests {
             artifacts_dir: "/nonexistent".to_string(),
             ..Default::default()
         };
-        let cases = generate_cases(&cfg, 705_600, "multiplier");
+        let cases = generate_cases(&cfg, 705_600, "multiplier", Some(2));
         // Ladder is {60, 600}. Below one batch: B=10 at N=60 (150/step), and
         // B=100 at both N=60 and N=600 (1500/step).
         let too_small = cases

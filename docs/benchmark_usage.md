@@ -108,6 +108,7 @@ dry-run first.**
 |---|---|---|
 | `--max-n <N>` | **required\*** | Where the N ladder stops |
 | `--durations <list>` | — | Audio lengths in seconds; replaces the ladder |
+| `--n-list <list>` | — | Explicit sample counts; overrides ladder and durations |
 | `--sample-rate <hz>` | `44100` | Rate assumed by `--durations` |
 | `--channels <n>` | `2` | Channels assumed by `--durations` |
 | `--batch-sizes <list>` | `10,40,100,200` | Comma-separated B values |
@@ -121,7 +122,7 @@ dry-run first.**
 | `--dry-run` | off | Print the matrix and exit |
 | `-h`, `--help` | | Show usage |
 
-\* Either `--max-n` or `--durations` is required, not both.
+\* Exactly one of `--max-n`, `--durations` or `--n-list` is required.
 
 ---
 
@@ -239,7 +240,47 @@ columns that are the actually-comparable numbers:
   That flatness *is* the IVC property, visible directly in the table.
 
 It also carries a **circuit size** table (constraints per step, a property of B
-alone) and a **commitments** table.
+alone), four **peak RSS** tables, and a **commitments** table.
+
+### Memory tables — what they mean
+
+Proving is memory-hungry, and the figure that matters is a *peak*, not an
+end-of-phase reading: Nova's folding loop allocates and frees per step, so the
+high-water mark happens inside `create_recursive_circuit` and is gone by the
+time it returns. A background thread therefore samples process RSS every 50ms
+and keeps the maximum per phase:
+
+| Table | Phase sampled |
+|---|---|
+| Peak RSS, whole proof | max across all phases |
+| Peak RSS during folding | `create_recursive_circuit` (includes the wasm witness generator) |
+| Peak RSS during compression | `CompressedSNARK::setup` + `prove` together |
+| Peak RSS over baseline | peak minus the RSS measured just before proving |
+
+Measured at B=100, N=6000: ~706 MB during folding, ~817 MB during compression —
+**the compression phase is the memory peak**, not the folding loop, and peak
+scales with **B** (batch size), not with N. At B=10 the whole proof peaks around
+280–330 MB regardless of N.
+
+**Three caveats, all of which belong next to any number you quote:**
+
+1. **Process-wide.** The figure covers the whole benchmark binary — the wasm
+   witness generator's allocations and the parsed JSON input included — not the
+   prover's working set in isolation.
+2. **Sampled**, so a spike shorter than 50ms is missed. Every value is a
+   *lower bound* on the true peak.
+3. **"Over baseline" does not reproduce.** The allocator keeps freed pages, so a
+   case that runs later in a sweep starts from a higher baseline and reports a
+   smaller delta for identical work. The same (N=6000, B=100) cell measured a
+   **35.9 MB** baseline run alone and **344.7 MB** as the third case of a sweep —
+   while its absolute peak differed by only 2.6% (877.7 vs 854.9 MB).
+
+   **So compare absolute peaks, not deltas.** To measure one cell's own
+   footprint, run that cell alone.
+
+RSS is resident pages, which the OS may reclaim under pressure — these are
+measurements of a particular run, not a minimum spec. `manifest.json` records
+whether sampling was supported and at what interval.
 
 ### Commitments table — what it does and doesn't prove
 
@@ -293,6 +334,12 @@ ok.pivot_table(index="total_samples", columns="batch_size",
                values="recursive_prove_ms", aggfunc="median")
 ```
 
+Each row also carries `peak_rss_bytes`, `rss_baseline_bytes`,
+`peak_rss_public_params_bytes`, `peak_rss_recursive_prove_bytes` and
+`peak_rss_compressed_prove_bytes`. These are `null` (not `0`) where the platform
+offers no RSS query, so a missing measurement is distinguishable from a measured
+zero. Supported on macOS and Linux.
+
 Every row carries its own identity (`batch_size`, `total_samples`, `edit`,
 `audio_input`, `bit_depth`, `repetition`), so rows stay meaningful out of
 context. Skipped and failed cases appear too, with a `reason` or `error`, so a
@@ -341,7 +388,41 @@ fixture you add for `gain2` needs the same headroom.
 ./target/release/bench --max-n 6000 --edit gain2
 ```
 
-`gain2` is the only edit available today. Adding one requires **both sides**:
+### The edit registry today
+
+| Edit | Factor k | Clamps? | Bit depths | Circuit artifacts |
+|---|---|---|---|---|
+| `gain2` | 2 | **no** | 16 | `multiplier_b16_B{10,40,100,200}` |
+| `gain_k2` | 2 | yes | 8, 16 | `gain_b{8,16}_k2_B{10,100}` |
+| `gain_k3` | 3 | yes | 16 | `gain_b16_k3_B{10,100}` |
+| `gain_k4` | 4 | yes | 8, 16 | `gain_b{8,16}_k4_B{10,100}` |
+
+`gain2` is the **original unclamped baseline**, kept unchanged so the
+duration-scaling results in
+[duration_scaling_conclusions.md](duration_scaling_conclusions.md) remain
+valid and comparable. It requires audio with headroom, since `x * 2` must not
+overflow.
+
+The `gain_*` family is the generalized relation: **any integer k > 1,
+saturating at the limits of the bit depth, at 8 or 16 bits**. Use it for new
+work; it is safe on full-scale audio precisely because it clamps.
+
+To add another factor, write the instantiation and compile it:
+
+```bash
+cat > circuits/gain_b16_k5_B100.circom <<'EOF'
+pragma circom 2.1.6;
+include "gain_step.circom";
+component main { public [step_in] } = Gain(100, 16, 5);
+EOF
+./compile.circuit.sh circuits/gain_b16_k5_B100.circom
+```
+
+then add a matching `EditSpec` with `factor: Some(5)`.
+
+### Adding a different kind of edit
+
+Adding one requires **both sides**:
 
 1. **Circom** — a step circuit enforcing the relation, plus a
    `component main = Multiply(B)` instantiation per B, compiled into
@@ -368,10 +449,30 @@ are not in the registry.
 
 ### Different bit depth
 
-`--bit-depth` accepts only 16 today. The plumbing is parameterized —
-`comp_size` is derived as `(256 - bit_depth) / bit_depth`, not hardcoded — but
-another depth needs a new step circuit, since the `-32768` offset is
-`2^(bit_depth-1)`.
+`--bit-depth` accepts **8 or 16**. `comp_size` is derived as
+`(256 - bit_depth) / bit_depth`, so the packing density changes with the depth:
+
+| Bit depth | Samples per field element | Samples/step at B=10 | B=100 |
+|---|---|---|---|
+| 16 | 15 | 150 | 1,500 |
+| 8 | 31 | 310 | 3,100 |
+
+**The N ladder does not work at 8 bits.** A B=10 step covers 310 samples, and no
+`60 × 10^k` value is a whole number of 310s, so every cell skips as
+`NotDivisible`. Use `--n-list` with explicit multiples instead:
+
+```bash
+./target/release/bench --n-list 3100,31000 --bit-depth 8 \
+    --edit gain_k2 --batch-sizes 10 --input <an 8-bit wav>
+```
+
+The suite also refuses to run when `--bit-depth` disagrees with the WAV's actual
+`bits_per_sample`, rather than proving a misreported relation. Note `hound`
+returns signed samples at both depths — it normalizes away the 8-bit unsigned
+on-disk storage convention itself — so no recentring is applied on read.
+
+Adding a third depth needs a new set of compiled `Gain(B, bit_depth, k)`
+instantiations; the circom template itself is already depth-generic.
 
 ---
 

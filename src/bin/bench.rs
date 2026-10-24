@@ -20,12 +20,16 @@ REQUIRED (one of):
     --durations <list>       Comma-separated audio durations in SECONDS.
                              N is computed as secs * sample-rate * channels,
                              replacing the ladder entirely. Fractions allowed.
+    --n-list <list>          Explicit sample counts, overriding both the
+                             ladder and --durations. Needed at bit depths
+                             whose samples-per-step does not divide the
+                             ladder (bd=8 at B=10 covers 310 samples/step).
 
 OPTIONS:
     --sample-rate <hz>       Rate assumed by --durations  [default: 44100]
     --channels <n>           Channels assumed by --durations        [default: 2]
     --batch-sizes <list>     Comma-separated B values    [default: 10,40,100,200]
-    --bit-depth <n>          Sample bit depth            [default: 16]
+    --bit-depth <n>          Sample bit depth (8 or 16)  [default: 16]
     --input <path>           WAV input
                              [default: raw_audios/2c_44sr_16bd_01.wav]
     --edit <name>            Edit to prove               [default: gain2]
@@ -105,6 +109,25 @@ fn parse(args: &[String]) -> Result<SuiteConfig, String> {
                 }
                 cfg.durations = v;
             }
+            "--n-list" => {
+                let raw = next(args, &mut i, arg)?;
+                let mut v = Vec::new();
+                for part in raw.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let n = parse_usize(part, arg)?;
+                    if n == 0 {
+                        return Err("--n-list entries must be > 0".to_string());
+                    }
+                    v.push(n);
+                }
+                if v.is_empty() {
+                    return Err("--n-list needs at least one value".to_string());
+                }
+                cfg.n_list = v;
+            }
             "--sample-rate" => {
                 let sr = parse_usize(next(args, &mut i, arg)?, arg)?;
                 if sr == 0 {
@@ -175,11 +198,14 @@ fn parse(args: &[String]) -> Result<SuiteConfig, String> {
         i += 1;
     }
 
-    if !saw_max_n && cfg.durations.is_empty() {
-        return Err("--max-n or --durations is required".to_string());
+    if !saw_max_n && cfg.durations.is_empty() && cfg.n_list.is_empty() {
+        return Err("--max-n, --durations or --n-list is required".to_string());
     }
     if saw_max_n && !cfg.durations.is_empty() {
         return Err("--max-n and --durations are mutually exclusive".to_string());
+    }
+    if !cfg.n_list.is_empty() && (saw_max_n || !cfg.durations.is_empty()) {
+        return Err("--n-list cannot be combined with --max-n or --durations".to_string());
     }
     if saw_max_n && cfg.max_n < 60 {
         return Err("--max-n must be at least 60 (the first ladder step)".to_string());

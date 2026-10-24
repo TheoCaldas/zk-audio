@@ -2,6 +2,7 @@
 //! structured results.
 
 pub mod config;
+pub mod memory;
 pub mod report;
 
 use std::path::Path;
@@ -14,8 +15,10 @@ use crate::bench::report::{print_matrix, EnvInfo, Reporter, ResultRow};
 use crate::circuit::{self, CaseMeta, MultiplierInput, RunConfig};
 
 pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
-    if cfg.max_n == 0 && cfg.durations.is_empty() {
-        return Err("--max-n or --durations is required (either drives total runtime)".to_string());
+    if cfg.max_n == 0 && cfg.durations.is_empty() && cfg.n_list.is_empty() {
+        return Err(
+            "--max-n, --durations or --n-list is required (they drive total runtime)".to_string(),
+        );
     }
     if !SUPPORTED_BIT_DEPTHS.contains(&cfg.bit_depth) {
         return Err(format!(
@@ -35,16 +38,32 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
         )
     })?;
 
+    if !edit.bit_depths.contains(&cfg.bit_depth) {
+        return Err(format!(
+            "edit '{}' has no circuit at bit_depth {}; available: {:?}",
+            cfg.edit, cfg.bit_depth, edit.bit_depths
+        ));
+    }
+
     if !Path::new(&cfg.audio_input).exists() {
         return Err(format!("audio input not found: {}", cfg.audio_input));
     }
 
     println!("Reading audio: {}", cfg.audio_input);
-    let original = audio_parser::read_samples(&cfg.audio_input);
+    // Depth-aware read: 8-bit WAV stores samples unsigned, so reading it
+    // as i16 would yield 0..=255 instead of -128..=127.
+    let (original_wide, file_bits) = audio_parser::read_samples_signed(&cfg.audio_input);
+    if file_bits as usize != cfg.bit_depth {
+        return Err(format!(
+            "--bit-depth {} but {} is a {}-bit file; pass --bit-depth {} or a matching file",
+            cfg.bit_depth, cfg.audio_input, file_bits, file_bits
+        ));
+    }
+    let original: Vec<i16> = original_wide.iter().map(|&s| s as i16).collect();
     let available = original.len();
     println!("Available samples: {}", available);
 
-    if !cfg.durations.is_empty() {
+    if !cfg.durations.is_empty() && cfg.n_list.is_empty() {
         let (ch, sr) = audio_meta(&cfg.audio_input);
         if ch != 0 && (ch as usize != cfg.channels || sr as usize != cfg.sample_rate) {
             // A duration is only meaningful against the real format; silently
@@ -58,7 +77,7 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
     }
 
     let comp = comp_size_for(cfg.bit_depth);
-    let cases = generate_cases(cfg, available, edit.circuit_prefix);
+    let cases = generate_cases(cfg, available, edit.circuit_prefix, edit.factor);
     print_matrix(&cases);
 
     if cfg.dry_run {
@@ -166,11 +185,15 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
             match circuit::run_proof(&run_cfg, &meta) {
                 Ok(m) => {
                     println!(
-                        "      prove {:.2}s  verify {:.0}ms  compressed {:.2}s  proof {} B",
+                        "      prove {:.2}s  verify {:.0}ms  compressed {:.2}s  proof {} B{}",
                         m.recursive_prove_ms / 1000.0,
                         m.recursive_verify_ms,
                         m.compressed_prove_ms / 1000.0,
-                        m.proof_size_bytes
+                        m.proof_size_bytes,
+                        match m.peak_rss_mb() {
+                            Some(mb) => format!("  peak {:.0} MB", mb),
+                            None => String::new(),
+                        }
                     );
                     reporter
                         .record(ResultRow::Ok(Box::new(m)))
@@ -217,10 +240,16 @@ fn ensure_input(c: &Case, original: &[i16], edited: &[i16], comp: usize) -> Resu
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    audio_parser::serialize_samples(
-        &original.to_vec(),
-        &edited.to_vec(),
+    // Depth-generic packer. At bit_depth=16 it is byte-identical to the
+    // legacy `serialize_samples` (pinned by a test in audio_parser), so
+    // existing serialized inputs and commitment hashes stay comparable.
+    let orig_wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
+    audio_parser::serialize_samples_at(
+        &orig_wide,
+        &edit_wide,
         c.samples_per_step(),
+        c.bit_depth as u32,
         &c.input_path,
     );
 
