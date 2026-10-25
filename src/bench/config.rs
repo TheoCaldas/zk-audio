@@ -122,6 +122,24 @@ fn gain_k4(original: &[i16], bit_depth: usize) -> Vec<i16> {
     clamped_gain(original, bit_depth, 4)
 }
 
+/// Power-of-two attenuation: k = 1/2^m. Floor rounding, no clamping
+/// needed (attenuation shrinks magnitude).
+fn attenuated(original: &[i16], bit_depth: usize, m: u32) -> Vec<i16> {
+    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    crate::audio_editor::attenuate(&wide, m, bit_depth as u32)
+        .expect("shift and sample range validated by the suite")
+        .into_iter()
+        .map(|s| s as i16)
+        .collect()
+}
+
+fn atten_m1(original: &[i16], bit_depth: usize) -> Vec<i16> {
+    attenuated(original, bit_depth, 1)
+}
+fn atten_m2(original: &[i16], bit_depth: usize) -> Vec<i16> {
+    attenuated(original, bit_depth, 2)
+}
+
 pub fn registry() -> Vec<EditSpec> {
     vec![
         // The original relation, kept unchanged as the benchmark baseline.
@@ -159,6 +177,25 @@ pub fn registry() -> Vec<EditSpec> {
             apply: gain_k4,
             factor: Some(4),
             clamps: true,
+            bit_depths: &[8, 16],
+        },
+        // Volume REDUCTION, k = 1/2^m. A separate circuit family: the
+        // relation is a shift (floor division), not a multiply, and needs
+        // no clamp because attenuation cannot leave the range.
+        EditSpec {
+            name: "atten_m1",
+            circuit_prefix: "atten",
+            apply: atten_m1,
+            factor: Some(1), // m, not k — see circuit_name_for
+            clamps: false,
+            bit_depths: &[8, 16],
+        },
+        EditSpec {
+            name: "atten_m2",
+            circuit_prefix: "atten",
+            apply: atten_m2,
+            factor: Some(2),
+            clamps: false,
             bit_depths: &[8, 16],
         },
     ]
@@ -290,6 +327,9 @@ pub fn circuit_name_for(
 ) -> String {
     match (prefix, factor) {
         ("gain", Some(k)) => format!("gain_b{}_k{}_B{}", bit_depth, k, batch_size),
+        // For the atten family the parameter is the shift m, so the stem
+        // reads m1/m2 (k = 1/2^m) rather than a multiplier.
+        ("atten", Some(m)) => format!("atten_b{}_m{}_B{}", bit_depth, m, batch_size),
         _ => format!("{}_b{}_B{}", prefix, bit_depth, batch_size),
     }
 }
@@ -465,6 +505,34 @@ mod tests {
             let n = samples_for_duration(secs, 44100, 2);
             for &b in &[10usize, 40, 100, 200] {
                 assert_eq!(n % (b * comp), 0, "B={} does not divide {}s (N={})", b, secs, n);
+            }
+        }
+    }
+
+    #[test]
+    fn atten_artifacts_are_named_by_shift() {
+        assert_eq!(
+            circuit_name_for("atten", Some(1), 8, 100),
+            "atten_b8_m1_B100"
+        );
+        assert_eq!(
+            circuit_name_for("gain", Some(2), 8, 100),
+            "gain_b8_k2_B100"
+        );
+    }
+
+    #[test]
+    fn every_registry_edit_has_a_resolvable_name() {
+        // A prefix/factor combination with no naming branch would build a
+        // path that silently never matches an artifact.
+        for e in registry() {
+            for &bd in e.bit_depths {
+                let n = circuit_name_for(e.circuit_prefix, e.factor, bd, 100);
+                assert!(
+                    n.contains(&format!("b{}", bd)) && n.ends_with("_B100"),
+                    "edit '{}' produced an unexpected stem: {}",
+                    e.name, n
+                );
             }
         }
     }
