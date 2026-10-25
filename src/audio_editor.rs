@@ -87,6 +87,53 @@ pub fn gain_multiplier(original: &[i16], amount: i8) -> Result<Vec<i16>, &str> {
     Ok(edited)
 }
 
+/// Attenuates `original` by a factor of `2^m` (m >= 1), i.e. gain
+/// k = 1/2, 1/4, 1/8, ... — about -6dB per step of m.
+///
+/// Rounding is **floor** (toward negative infinity), via an arithmetic
+/// right shift. This deliberately does NOT match Rust's `/`, which
+/// truncates toward zero: `-7 / 4 == -1` but `-7 >> 2 == -2`. Floor is
+/// what the circuit computes, because it falls out of the bit
+/// decomposition for free, and the two sides must agree exactly.
+///
+/// No clamping is needed or applied: attenuation shrinks magnitude, so
+/// the result always fits the depth it came from.
+///
+/// # Examples
+/// ```
+/// use zk_audio::audio_editor::attenuate;
+/// // Halving, 8-bit.
+/// assert_eq!(attenuate(&[100, -100, 1, 0], 1, 8).unwrap(), vec![50, -50, 0, 0]);
+/// // Floor, not truncation: -7/4 floors to -2.
+/// assert_eq!(attenuate(&[-7], 2, 8).unwrap(), vec![-2]);
+/// // The extremes stay in range.
+/// assert_eq!(attenuate(&[-128, 127], 1, 8).unwrap(), vec![-64, 63]);
+/// ```
+pub fn attenuate(original: &[i32], m: u32, bit_depth: u32) -> Result<Vec<i32>, String> {
+    if m == 0 {
+        return Err("attenuation shift m must be >= 1 (m=0 is a no-op)".to_string());
+    }
+    if m >= bit_depth {
+        return Err(format!(
+            "attenuation shift m={} would zero every {}-bit sample",
+            m, bit_depth
+        ));
+    }
+    let (min, max) = sample_limits(bit_depth);
+    let mut edited = Vec::with_capacity(original.len());
+    for (i, &sample) in original.iter().enumerate() {
+        if sample < min || sample > max {
+            return Err(format!(
+                "sample {} at index {} does not fit in {} bits (range {}..={})",
+                sample, i, bit_depth, min, max
+            ));
+        }
+        // Arithmetic shift == floor division by 2^m, including negatives.
+        edited.push(sample >> m);
+    }
+    Ok(edited)
+}
+
 /// Applies a distortion effect to the original audio samples.
 pub fn distortion(original: &[i16]) -> Vec<i16> {
     let mut edited = Vec::with_capacity(original.len());
@@ -227,6 +274,89 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The in-circuit attenuation, transcribed from `AttenuatedGain` in
+    /// `circuits/atten_step.circom`, operating in NORMALIZED space.
+    fn circuit_atten_normalized(orig_n: i64, m: u32, bit_depth: u32) -> i64 {
+        let half = 1i64 << (bit_depth - 1);
+        // v = orig_n + half*(2^m - 1), always non-negative.
+        let v = orig_n + half * ((1i64 << m) - 1);
+        // edit_n = v >> m; the offset cancels exactly.
+        v >> m
+    }
+
+    #[test]
+    fn atten_floor_matches_circuit_exhaustively() {
+        for bd in [8u32, 16] {
+            let half = 1i64 << (bd - 1);
+            for m in 1..4u32 {
+                for orig in -half..half {
+                    let rust = attenuate(&[orig as i32], m, bd).unwrap()[0] as i64 + half;
+                    let circuit = circuit_atten_normalized(orig + half, m, bd);
+                    assert_eq!(
+                        rust, circuit,
+                        "disagreement at bd={} m={} orig={}: rust={} circuit={}",
+                        bd, m, orig, rust, circuit
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn atten_is_floor_not_truncation() {
+        // The distinction that would silently break Rust/circom agreement.
+        assert_eq!(attenuate(&[-7], 2, 8).unwrap(), vec![-2]); // floor
+        assert_ne!(-7i32 / 4, -2); // Rust's `/` gives -1
+        assert_eq!(attenuate(&[-1], 1, 8).unwrap(), vec![-1]); // floor(-0.5) = -1
+        assert_eq!(attenuate(&[1], 1, 8).unwrap(), vec![0]);
+    }
+
+    #[test]
+    fn atten_output_always_fits_and_never_clamps() {
+        // Attenuation shrinks magnitude, so Recompressor stays sound with
+        // no clamp - the property the circuit relies on.
+        for bd in [8u32, 16] {
+            let half = 1i64 << (bd - 1);
+            let step = if bd == 8 { 1 } else { 97 };
+            for m in 1..4u32 {
+                let mut orig = -half;
+                while orig < half {
+                    let out = circuit_atten_normalized(orig + half, m, bd);
+                    assert!(
+                        out >= 0 && out < (1i64 << bd),
+                        "bd={} m={} orig={} produced {} outside [0, 2^{})",
+                        bd, m, orig, out, bd
+                    );
+                    orig += step;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn atten_rejects_degenerate_shifts() {
+        assert!(attenuate(&[1], 0, 8).is_err());
+        assert!(attenuate(&[1], 8, 8).is_err());
+        assert!(attenuate(&[1000], 1, 8).is_err()); // out of depth
+    }
+
+    /// Shifting the normalized value directly is the obvious-looking
+    /// mistake, and it is wrong for EVERY input - not just negatives.
+    /// This pins why the offset formulation exists.
+    #[test]
+    fn naive_shift_of_normalized_value_is_wrong() {
+        let bd = 8u32;
+        let half = 1i64 << (bd - 1);
+        let mut mismatches = 0;
+        for orig in -half..half {
+            let naive = ((orig + half) >> 1) - half;
+            if naive != (orig >> 1) {
+                mismatches += 1;
+            }
+        }
+        assert_eq!(mismatches, 2 * half, "expected every input to mismatch");
     }
 
     #[test]
