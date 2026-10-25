@@ -4,7 +4,7 @@
 
 use zk_audio::{
     audio_parser,
-    bench::config::{comp_size_for, find_edit},
+    bench::config::{circuit_name_for, comp_size_for, find_edit},
     circuit,
 };
 
@@ -32,7 +32,11 @@ fn main() {
         batch_size
     );
 
-    let circuit_name = &format!("{}_b{}_B{}", edit.circuit_prefix, bit_depth, batch_size);
+    // Use the shared namer, not an inline format!: the gain and atten
+    // families encode their factor in the stem (gain_b16_k3_B100,
+    // atten_b8_m1_B100), so a hand-rolled "{prefix}_b{bd}_B{B}" only ever
+    // resolves for the gain2 baseline.
+    let circuit_name = &circuit_name_for(edit.circuit_prefix, edit.factor, bit_depth, batch_size);
     let circuit_filepath = &format!("artifacts/{}.r1cs", circuit_name);
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
 
@@ -46,15 +50,28 @@ fn main() {
     );
     let original = &original[0..max_size];
 
+    assert!(
+        edit.bit_depths.contains(&bit_depth),
+        "edit '{}' has no circuit at bit depth {}; available: {:?}",
+        edit_name,
+        bit_depth,
+        edit.bit_depths
+    );
+
     /* Apply Edit */
     let edited = (edit.apply)(original, bit_depth);
 
     /* Serialize Samples */
     let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
-    audio_parser::serialize_samples(
-        &original.to_vec(),
-        &edited,
+    // Depth-generic serializer; byte-identical to the legacy 16-bit one at
+    // bit_depth=16, and the only correct choice at 8.
+    let orig_wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
+    audio_parser::serialize_samples_at(
+        &orig_wide,
+        &edit_wide,
         samples_per_step,
+        bit_depth as u32,
         json_input_filepath,
     );
 

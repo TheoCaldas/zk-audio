@@ -18,5 +18,11 @@ if [ ! -d "$OUTPUT_PATH" ]; then
     mkdir $OUTPUT_PATH
 fi
 
-circom $CIRCUIT_PATH -o $OUTPUT_PATH --r1cs --sym --wasm --prime vesta
-# circom $CIRCUIT_PATH -o $OUTPUT_PATH --r1cs --sym --wasm
+# -l circuits: resolves bare includes ("hasher.circom",
+# "circom/poseidon.circom") from the circuits/ root regardless of which
+# subdirectory the circuit being compiled lives in. Without it, circom
+# resolves includes relative to the including file, so a step circuit in
+# circuits/edits/<family>/ cannot find the shared primitives at
+# circuits/.
+circom $CIRCUIT_PATH -o $OUTPUT_PATH -l circuits --r1cs --sym --wasm --prime vesta
+# circom $CIRCUIT_PATH -o $OUTPUT_PATH -l circuits --r1cs --sym --wasm

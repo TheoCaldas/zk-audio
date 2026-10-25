@@ -334,6 +334,19 @@ pub fn circuit_name_for(
     }
 }
 
+/// Where an edit family's `.circom` sources live, relative to the repo
+/// root. The circuits tree is organised by family, so the recompile hint a
+/// skipped case prints has to point at the right subdirectory or it sends
+/// the reader to a path that does not exist.
+pub fn circuit_source_dir(prefix: &str) -> &'static str {
+    match prefix {
+        "gain" => "circuits/edits/gain",
+        "atten" => "circuits/edits/attenuation",
+        // The gain2 baseline still lives in the pre-reorganisation tree.
+        _ => "circuits/old",
+    }
+}
+
 pub fn generate_cases(
     cfg: &SuiteConfig,
     available_samples: usize,
@@ -378,7 +391,8 @@ pub fn generate_cases(
                 Err(SkipReason::MissingArtifact {
                     path: r1cs_path.clone(),
                     compile_with: format!(
-                        "./compile.circuit.sh circuits/{}.circom",
+                        "./compile.circuit.sh {}/{}.circom",
+                        circuit_source_dir(prefix),
                         circuit_name
                     ),
                 })
@@ -386,7 +400,8 @@ pub fn generate_cases(
                 Err(SkipReason::MissingArtifact {
                     path: wasm_path.clone(),
                     compile_with: format!(
-                        "./compile.circuit.sh circuits/{}.circom",
+                        "./compile.circuit.sh {}/{}.circom",
+                        circuit_source_dir(prefix),
                         circuit_name
                     ),
                 })
@@ -505,6 +520,24 @@ mod tests {
             let n = samples_for_duration(secs, 44100, 2);
             for &b in &[10usize, 40, 100, 200] {
                 assert_eq!(n % (b * comp), 0, "B={} does not divide {}s (N={})", b, secs, n);
+            }
+        }
+    }
+
+    #[test]
+    fn recompile_hints_point_at_real_source_files() {
+        // A hint naming a nonexistent path is worse than no hint: it sends
+        // the reader to a file that was moved. Check every registry edit's
+        // hint resolves to a file on disk.
+        for e in registry() {
+            for &bd in e.bit_depths {
+                let name = circuit_name_for(e.circuit_prefix, e.factor, bd, 100);
+                let path = format!("{}/{}.circom", circuit_source_dir(e.circuit_prefix), name);
+                assert!(
+                    std::path::Path::new(&path).exists(),
+                    "edit '{}' hint points at missing source {}",
+                    e.name, path
+                );
             }
         }
     }

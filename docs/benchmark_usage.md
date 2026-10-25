@@ -388,6 +388,35 @@ fixture you add for `gain2` needs the same headroom.
 ./target/release/bench --max-n 6000 --edit gain2
 ```
 
+### Where the circuits live
+
+The sources are organised by edit family; shared primitives stay at the root:
+
+```
+circuits/
+├── hasher.circom          — Poseidon wrappers (shared)
+├── decompressor.circom    — Decompressor + Recompressor (shared)
+├── circom/                — vendored circomlib
+├── edits/
+│   ├── gain/              — gain_step.circom + gain_b{8,16}_k*_B*.circom
+│   └── attenuation/       — atten_step.circom + atten_b{8,16}_m*_B*.circom
+└── old/                   — pre-reorganisation circuits, incl. the
+                             `multiplier` (gain2) baseline still in use
+```
+
+`compile.circuit.sh` passes `-l circuits`, so a circuit in any
+subdirectory can `include "hasher.circom"` by bare name. **Compiling without
+that flag fails** with `error[P1014]: The file hasher.circom to be included has
+not been found`, because circom otherwise resolves includes relative to the
+including file.
+
+One trap to know about: circom prefers the *including file's own directory*
+over the `-l` path, so a stale copy of a shared primitive sitting beside a
+circuit will shadow the real one. A duplicate `decompressor.circom` in `old/`
+(missing `Recompressor`) did exactly this and broke the baseline build until it
+was removed. If you copy circuits between directories, don't bring the shared
+primitives along.
+
 ### The edit registry today
 
 | Edit | Factor k | Clamps? | Bit depths | Circuit artifacts |
@@ -410,12 +439,12 @@ work; it is safe on full-scale audio precisely because it clamps.
 To add another factor, write the instantiation and compile it:
 
 ```bash
-cat > circuits/gain_b16_k5_B100.circom <<'EOF'
+cat > circuits/edits/gain/gain_b16_k5_B100.circom <<'EOF'
 pragma circom 2.1.6;
 include "gain_step.circom";
 component main { public [step_in] } = Gain(100, 16, 5);
 EOF
-./compile.circuit.sh circuits/gain_b16_k5_B100.circom
+./compile.circuit.sh circuits/edits/gain/gain_b16_k5_B100.circom
 ```
 
 then add a matching `EditSpec` with `factor: Some(5)`.
@@ -490,7 +519,7 @@ Lower B or raise `--max-n`.
 **`skip: missing artifact artifacts/multiplier_b16_B40.r1cs`**
 That circuit isn't compiled. The dry-run output prints the exact command:
 ```bash
-./compile.circuit.sh circuits/multiplier_b16_B40.circom
+./compile.circuit.sh circuits/old/multiplier_b16_B40.circom
 ```
 
 **`WARNING: debug build — timings are not representative`**
