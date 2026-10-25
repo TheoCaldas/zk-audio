@@ -19,7 +19,7 @@ pub fn sample_limits(bit_depth: u32) -> (i32, i32) {
 /// limits of the representation rather than wrapping.
 ///
 /// This is the off-circuit mirror of `ClampedGain` in
-/// `circuits/gain_step.circom`; the two must agree for every input, or
+/// `circuits/edits/gain/gain_step.circom`; the two must agree for every input, or
 /// the suite proves a relation other than the one it reports.
 pub fn clamp_to_depth(value: i64, bit_depth: u32) -> i32 {
     let (min, max) = sample_limits(bit_depth);
@@ -223,7 +223,7 @@ mod tests {
     }
 
     /// The in-circuit computation, transcribed from `ClampedGain` in
-    /// `circuits/gain_step.circom`, operating in NORMALIZED space.
+    /// `circuits/edits/gain/gain_step.circom`, operating in NORMALIZED space.
     ///
     /// This is the contract test for the whole scheme: if the Rust
     /// reference and the circuit disagree on any input, the benchmark
@@ -277,7 +277,7 @@ mod tests {
     }
 
     /// The in-circuit attenuation, transcribed from `AttenuatedGain` in
-    /// `circuits/atten_step.circom`, operating in NORMALIZED space.
+    /// `circuits/edits/attenuation/atten_step.circom`, operating in NORMALIZED space.
     fn circuit_atten_normalized(orig_n: i64, m: u32, bit_depth: u32) -> i64 {
         let half = 1i64 << (bit_depth - 1);
         // v = orig_n + half*(2^m - 1), always non-negative.

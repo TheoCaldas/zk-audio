@@ -2,6 +2,10 @@
 name = "zk-audio"
 version = "0.1.0"
 edition = "2024"
+# Bare `cargo run` targets the single-run demo; the sweep is
+# `cargo run --bin bench`. Without this, adding the second binary made
+# `cargo run` ambiguous and it errored out.
+default-run = "zk-audio"
 
 [dependencies]
 nova-scotia = "0.5.0"
