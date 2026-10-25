@@ -308,6 +308,38 @@ pub fn normalize_samples_at(samples: &[i32], bit_depth: u32) -> Vec<i32> {
     samples.iter().map(|&s| s + half).collect()
 }
 
+/// Serializes a batched (a, b, out) triple for multi-input edits.
+///
+/// `a` lands in `original` and `out` in `edited`, matching the field
+/// names every other edit uses, so existing tooling reads the same two
+/// slots; `b` is carried in the optional `stream_b` field.
+pub fn serialize_merge_at(
+    a: &[i32],
+    b: &[i32],
+    out: &[i32],
+    batch_size: usize,
+    bit_depth: u32,
+    filepath: &str,
+) {
+    let batch = |src: &[i32]| -> Vec<Vec<String>> {
+        src.chunks(batch_size)
+            .map(|c| compress_samples_at(&normalize_samples_at(c, bit_depth), bit_depth))
+            .collect()
+    };
+    let input_data = MultiplierInput {
+        original: batch(a),
+        edited: batch(out),
+        stream_b: Some(batch(b)),
+    };
+    let mut file = fs::File::create(filepath).unwrap();
+    file.write_all(
+        serde_json::to_string_pretty(&json!(input_data))
+            .unwrap()
+            .as_bytes(),
+    )
+    .unwrap();
+}
+
 /// Serializes a batched (original, edited) pair at an arbitrary bit depth.
 /// The generic counterpart to [`serialize_samples`], which is 16-bit only.
 pub fn serialize_samples_at(
@@ -334,6 +366,7 @@ pub fn serialize_samples_at(
     let input_data = MultiplierInput {
         original: batched_original,
         edited: batched_edited,
+        stream_b: None,
     };
     let mut file = fs::File::create(filepath).unwrap();
     file.write_all(
@@ -362,6 +395,7 @@ pub fn serialize_samples(
     let input_data = MultiplierInput {
         original: batched_original,
         edited: batched_edited,
+        stream_b: None,
     };
     let mut file = fs::File::create(filepath).unwrap();
     file.write_all(serde_json::to_string_pretty(&json!(input_data)).unwrap().as_bytes()).unwrap();

@@ -1,0 +1,54 @@
+{
+  "audio": {
+    "channels": 2,
+    "note": "samples are interleaved channels as a flat vector",
+    "path": "raw_audios/sweep_31s_2c_44sr_8bd.wav",
+    "sample_rate": 44100,
+    "total_samples": 2734200
+  },
+  "cases": {
+    "runnable": 4,
+    "total": 4
+  },
+  "config": {
+    "audio_input": "raw_audios/sweep_31s_2c_44sr_8bd.wav",
+    "batch_sizes": [
+      100
+    ],
+    "bit_depth": 8,
+    "cache_inputs": false,
+    "comp_size": 31,
+    "duration_channels": 2,
+    "duration_sample_rate": 44100,
+    "durations_sec": [],
+    "edit": "concat",
+    "max_n": 0,
+    "n_targets": [
+      3100,
+      31000,
+      310000,
+      2644300
+    ],
+    "repeat": 3,
+    "skip_compressed": false
+  },
+  "environment": {
+    "arch": "aarch64",
+    "circom": "circom compiler 2.2.2",
+    "cores": "10",
+    "cpu": "Apple M2 Pro",
+    "debug_build": false,
+    "git_dirty": true,
+    "git_sha": "772fed0d11ca96968507487d7693b8d29abcf927",
+    "os": "macos",
+    "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11) (Homebrew)"
+  },
+  "memory": {
+    "note": "peak_rss_* are PROCESS-WIDE and SAMPLED: they include the wasm witness generator and anything else the binary holds, and a spike shorter than the sample interval can be missed, so each value is a LOWER BOUND on the true peak. Figures assume an otherwise-idle machine; concurrent load on the same process would inflate them. RSS is resident pages, which the OS may reclaim under pressure - it is a measurement of this run, not a minimum spec.",
+    "sample_interval_ms": 50,
+    "supported": true
+  },
+  "notes": "compressed_prove_ms EXCLUDES CompressedSNARK::setup (measured as compressed_setup_ms). Logs predating schema_version 2 reported setup+prove summed, so those numbers are not directly comparable.",
+  "schema_version": 2,
+  "started_at": "run-1792906930"
+}

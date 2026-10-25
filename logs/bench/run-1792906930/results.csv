@@ -1,0 +1,13 @@
+status,circuit_name,edit,audio_input,bit_depth,batch_size,comp_size,total_samples,repetition,iterations,constraints_primary,constraints_secondary,variables_primary,variables_secondary,public_params_ms,recursive_prove_ms,recursive_verify_ms,compressed_setup_ms,compressed_prove_ms,compressed_verify_ms,proof_size_bytes,us_per_sample,ms_per_iteration,final_hash_original,final_hash_edited,note
+ok,concat_b8_B100,concat,raw_audios/sweep_31s_2c_44sr_8bd.wav,8,100,31,3100,1,1,115446,10347,115645,10329,2676.153,434.842,80.688,193.593,2891.024,100.890,29336,140.271613,434.842,0x0000000000000000000000000000000000000000000000000000000000000000,0x2392d97469eb8b70b90aa8359c96aec78576ea4ef281926aa3455de6eb9941f7,
+ok,concat_b8_B100,concat,raw_audios/sweep_31s_2c_44sr_8bd.wav,8,100,31,3100,2,1,115446,10347,115645,10329,2671.635,450.253,80.015,194.427,2891.487,100.333,29336,145.242957,450.253,0x0000000000000000000000000000000000000000000000000000000000000000,0x2392d97469eb8b70b90aa8359c96aec78576ea4ef281926aa3455de6eb9941f7,
+ok,concat_b8_B100,concat,raw_audios/sweep_31s_2c_44sr_8bd.wav,8,100,31,3100,3,1,115446,10347,115645,10329,2774.096,440.875,82.265,192.872,2975.345,99.855,29336,142.217863,440.875,0x0000000000000000000000000000000000000000000000000000000000000000,0x2392d97469eb8b70b90aa8359c96aec78576ea4ef281926aa3455de6eb9941f7,
+failed,concat_b8_B100,,,8,100,,31000,1,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,31000,2,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,31000,3,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,310000,1,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,310000,2,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,310000,3,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,2644300,1,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,2644300,2,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
+failed,concat_b8_B100,,,8,100,,2644300,3,,,,,,,,,,,,,,,,,"RecursiveSNARK::verify failed: UnSat"
