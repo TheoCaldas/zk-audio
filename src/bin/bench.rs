@@ -32,6 +32,9 @@ OPTIONS:
     --bit-depth <n>          Sample bit depth (8 or 16)  [default: 16]
     --input <path>           WAV input
                              [default: raw_audios/2c_44sr_16bd_01.wav]
+    --input-b <path>         Second WAV, required by multi-input edits
+                             (merge). No default: a run's sources are
+                             always explicit.
     --edit <name>            Edit to prove               [default: gain2]
     --out <dir>              Output root                 [default: logs/bench]
     --repeat <n>             Repetitions per case        [default: 3]
@@ -174,6 +177,7 @@ fn parse(args: &[String]) -> Result<SuiteConfig, String> {
                 cfg.bit_depth = bd;
             }
             "--input" => cfg.audio_input = next(args, &mut i, arg)?.to_string(),
+            "--input-b" => cfg.audio_input_b = next(args, &mut i, arg)?.to_string(),
             "--edit" => {
                 let name = next(args, &mut i, arg)?.to_string();
                 if registry().iter().all(|e| e.name != name) {

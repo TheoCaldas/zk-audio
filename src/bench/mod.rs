@@ -38,6 +38,31 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
         )
     })?;
 
+    // Multi-input edits need a second stream; refuse rather than invent
+    // one, so a run's sources are always explicit in the manifest.
+    let stream_b: Option<Vec<i16>> = if edit.apply2.is_some() {
+        if cfg.audio_input_b.is_empty() {
+            return Err(format!(
+                "edit '{}' takes two streams; pass --input-b <wav>",
+                cfg.edit
+            ));
+        }
+        if !Path::new(&cfg.audio_input_b).exists() {
+            return Err(format!("second audio input not found: {}", cfg.audio_input_b));
+        }
+        let (wide_b, bits_b) = audio_parser::read_samples_signed(&cfg.audio_input_b);
+        if bits_b as usize != cfg.bit_depth {
+            return Err(format!(
+                "--bit-depth {} but {} is a {}-bit file",
+                cfg.bit_depth, cfg.audio_input_b, bits_b
+            ));
+        }
+        println!("Reading audio B: {} ({} samples)", cfg.audio_input_b, wide_b.len());
+        Some(wide_b.iter().map(|&s| s as i16).collect())
+    } else {
+        None
+    };
+
     if !edit.bit_depths.contains(&cfg.bit_depth) {
         return Err(format!(
             "edit '{}' has no circuit at bit_depth {}; available: {:?}",
@@ -75,6 +100,12 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
             ));
         }
     }
+
+    // A merge case is limited by the SHORTER stream.
+    let available = match &stream_b {
+        Some(b) => available.min(b.len()),
+        None => available,
+    };
 
     let comp = comp_size_for(cfg.bit_depth);
     let cases = generate_cases(cfg, available, edit.circuit_prefix, edit.factor);
@@ -138,9 +169,22 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
 
     for c in cases.iter().filter(|c| c.is_runnable()) {
         let slice = &original[0..c.total_samples];
-        let edited = (edit.apply)(slice, cfg.bit_depth);
+        let ctx = config::EditCtx {
+            bit_depth: cfg.bit_depth,
+            batch_size: c.batch_size,
+            // The suite always proves a prefix of the file, so every case
+            // starts at stream index 0.
+            start_index: 0,
+            comp_size: comp,
+            period: cfg.lfo_period,
+        };
+        let slice_b: Option<&[i16]> = stream_b.as_ref().map(|b| &b[0..c.total_samples]);
+        let edited = match (edit.apply2, slice_b) {
+            (Some(f2), Some(b)) => f2(slice, b, &ctx),
+            _ => (edit.apply)(slice, &ctx),
+        };
 
-        if let Err(e) = ensure_input(c, slice, &edited, comp) {
+        if let Err(e) = ensure_input(c, slice, &edited, slice_b, comp) {
             done += cfg.repeat;
             eprintln!("  input preparation failed: {}", e);
             reporter
@@ -180,6 +224,17 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
                 json_input_filepath: &c.input_path,
                 skip_compressed: cfg.skip_compressed,
                 verbose: false,
+                multi_input: edit.multi_input,
+                // Concat carries its split point in the state; a zero
+                // there would silently prove the wrong relation.
+                initial_state: if edit.name == "concat" {
+                    let spb = c.samples_per_step();
+                    let aligned = ((c.total_samples / 2) / spb) * spb;
+                    vec![(4, aligned as u64)]
+                } else {
+                    Vec::new()
+                },
+                state_width: edit.state_width,
             };
 
             match circuit::run_proof(&run_cfg, &meta) {
@@ -231,7 +286,13 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
 /// Generates the serialized input if absent, reuses it when its shape already
 /// matches. The post-write check is what catches a file whose name disagrees
 /// with its contents.
-fn ensure_input(c: &Case, original: &[i16], edited: &[i16], comp: usize) -> Result<(), String> {
+fn ensure_input(
+    c: &Case,
+    original: &[i16],
+    edited: &[i16],
+    stream_b: Option<&[i16]>,
+    comp: usize,
+) -> Result<(), String> {
     if Path::new(&c.input_path).exists() && validate_shape(c, comp).is_ok() {
         return Ok(());
     }
@@ -245,13 +306,26 @@ fn ensure_input(c: &Case, original: &[i16], edited: &[i16], comp: usize) -> Resu
     // existing serialized inputs and commitment hashes stay comparable.
     let orig_wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
     let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
-    audio_parser::serialize_samples_at(
-        &orig_wide,
-        &edit_wide,
-        c.samples_per_step(),
-        c.bit_depth as u32,
-        &c.input_path,
-    );
+    match stream_b {
+        Some(b) => {
+            let b_wide: Vec<i32> = b.iter().map(|&s| s as i32).collect();
+            audio_parser::serialize_merge_at(
+                &orig_wide,
+                &b_wide,
+                &edit_wide,
+                c.samples_per_step(),
+                c.bit_depth as u32,
+                &c.input_path,
+            );
+        }
+        None => audio_parser::serialize_samples_at(
+            &orig_wide,
+            &edit_wide,
+            c.samples_per_step(),
+            c.bit_depth as u32,
+            &c.input_path,
+        ),
+    }
 
     validate_shape(c, comp)
 }

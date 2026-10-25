@@ -76,16 +76,51 @@ pub fn n_targets(cfg: &SuiteConfig) -> Vec<usize> {
 /// `gain2` family does NOT (it is pure arithmetic and relies on the audio
 /// having headroom), while the generalized `gain` family does. The suite
 /// uses this to decide whether full-scale audio is safe to prove.
+/// Everything an edit needs beyond the samples themselves. Memoryless
+/// edits (gain, attenuation) ignore all of it; a time-varying edit like
+/// tremolo needs the stream position and the packing width, because its
+/// LFO is a function of absolute sample index and is held constant per
+/// packed element.
+#[derive(Clone, Copy, Debug)]
+pub struct EditCtx {
+    pub bit_depth: usize,
+    /// Packed elements per fold. Needed by edits whose boundary must be
+    /// fold-aligned (concat).
+    pub batch_size: usize,
+    /// Index of this slice's first sample within the whole stream. The
+    /// suite always proves a prefix, so this is 0 today, but the edit
+    /// functions take it so chunked callers stay correct.
+    pub start_index: usize,
+    /// Samples per packed field element.
+    pub comp_size: usize,
+    /// LFO period in samples, for edits that have one.
+    pub period: usize,
+}
+
 pub struct EditSpec {
     pub name: &'static str,
     pub circuit_prefix: &'static str,
-    pub apply: fn(&[i16], usize) -> Vec<i16>,
+    pub apply: fn(&[i16], &EditCtx) -> Vec<i16>,
+    /// For multi-input edits, the two-stream relation. When present the
+    /// suite reads a second WAV and `apply` is ignored: a function of two
+    /// streams cannot be expressed by the single-stream signature, and
+    /// faking it (e.g. by closing over stream B) would hide the second
+    /// input from the manifest.
+    pub apply2: Option<fn(&[i16], &[i16], &EditCtx) -> Vec<i16>>,
     /// Gain factor k, for the generalized family. `None` for edits whose
     /// circuit does not take a factor.
     pub factor: Option<u32>,
     pub clamps: bool,
     /// Bit depths this edit has compiled circuits for.
     pub bit_depths: &'static [usize],
+    /// True when the third IVC state element is a second stream's hash
+    /// rather than a sample counter.
+    pub multi_input: bool,
+    /// Width of the Nova public IVC state. Memoryless edits carry the two
+    /// running hashes; a time-varying edit adds a proven sample counter,
+    /// so `start_public_input` must be sized to match the circuit or
+    /// Nova rejects the witness.
+    pub state_width: usize,
 }
 
 /// `gain2`: the relation `multiplier_step_b16.circom` proves is
@@ -96,7 +131,7 @@ pub struct EditSpec {
 /// to i16 range on signed samples — the circuit has no clamping, so the two are
 /// different functions. Wiring the clamping version here would prove the wrong
 /// relation.
-fn gain2(original: &[i16], _bit_depth: usize) -> Vec<i16> {
+fn gain2(original: &[i16], _ctx: &EditCtx) -> Vec<i16> {
     original.iter().map(|x| x * 2).collect()
 }
 
@@ -112,14 +147,14 @@ fn clamped_gain(original: &[i16], bit_depth: usize, k: u32) -> Vec<i16> {
         .collect()
 }
 
-fn gain_k2(original: &[i16], bit_depth: usize) -> Vec<i16> {
-    clamped_gain(original, bit_depth, 2)
+fn gain_k2(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    clamped_gain(original, ctx.bit_depth, 2)
 }
-fn gain_k3(original: &[i16], bit_depth: usize) -> Vec<i16> {
-    clamped_gain(original, bit_depth, 3)
+fn gain_k3(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    clamped_gain(original, ctx.bit_depth, 3)
 }
-fn gain_k4(original: &[i16], bit_depth: usize) -> Vec<i16> {
-    clamped_gain(original, bit_depth, 4)
+fn gain_k4(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    clamped_gain(original, ctx.bit_depth, 4)
 }
 
 /// Power-of-two attenuation: k = 1/2^m. Floor rounding, no clamping
@@ -133,11 +168,96 @@ fn attenuated(original: &[i16], bit_depth: usize, m: u32) -> Vec<i16> {
         .collect()
 }
 
-fn atten_m1(original: &[i16], bit_depth: usize) -> Vec<i16> {
-    attenuated(original, bit_depth, 1)
+fn atten_m1(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    attenuated(original, ctx.bit_depth, 1)
 }
-fn atten_m2(original: &[i16], bit_depth: usize) -> Vec<i16> {
-    attenuated(original, bit_depth, 2)
+fn atten_m2(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    attenuated(original, ctx.bit_depth, 2)
+}
+
+/// Concat: out = A then B. Two-input like merge, but combining duration
+/// rather than value, so the suite proves N_a + N_b samples total.
+///
+/// The suite splits its single N in half: the first half comes from
+/// stream A, the second from stream B, which keeps the boundary
+/// fold-aligned whenever N is (and N always is, by the divisibility
+/// the case matrix already enforces).
+fn concat_streams(a: &[i16], b: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    // The caller hands equal-length slices; the split is at the
+    // fold-aligned midpoint, so the output is A's first half followed by
+    // B's second half.
+    //
+    // B is taken from the SAME absolute offset, not restarted at 0. The
+    // circuit compares out[j] against a[j] or b[j] at the same batch
+    // index, so after the boundary batch j must hold b[j*spb..], not
+    // b[(j-q)*spb..]. Restarting B from zero verifies at one fold (there
+    // is no fold past the boundary) and fails at every larger N - which
+    // is exactly the failure this once produced.
+    let spb = ctx.comp_size * ctx.batch_size;
+    let aligned = ((a.len() / 2) / spb) * spb;
+    let mut out = Vec::with_capacity(a.len());
+    out.extend_from_slice(&a[..aligned]);
+    out.extend_from_slice(&b[aligned..]);
+    out
+}
+
+/// Merge: out = floor((a + b)/2). The only two-input relation, so the
+/// only edit using `apply2`.
+///
+/// Averaging rather than clamped summing: it cannot overflow, so the
+/// circuit needs no saturation logic and costs 20% fewer constraints
+/// (248,400 vs 310,400 at bd=8/B=100).
+fn merge_streams(a: &[i16], b: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    let wa: Vec<i32> = a.iter().map(|&s| s as i32).collect();
+    let wb: Vec<i32> = b.iter().map(|&s| s as i32).collect();
+    crate::audio_editor::merge(&wa, &wb, ctx.bit_depth as u32)
+        .expect("stream lengths and ranges validated by the suite")
+        .into_iter()
+        .map(|s| s as i16)
+        .collect()
+}
+
+/// Crop: a verbatim contiguous window. The suite proves a prefix, so the
+/// window starts at `ctx.start_index` (0) and runs for the whole slice -
+/// the interesting variable is the COUNTER the circuit proves, not the
+/// values, which pass through unchanged.
+fn crop_window(original: &[i16], _ctx: &EditCtx) -> Vec<i16> {
+    original.to_vec()
+}
+
+/// Distortion per `dist 1.c`: rectifier fold blended with the dry
+/// signal. `blend` is the wet amount at scale 2^16.
+fn distorted(original: &[i16], bit_depth: usize, blend: i64) -> Vec<i16> {
+    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    crate::audio_editor::distort(&wide, blend, bit_depth as u32)
+        .expect("blend and sample range validated by the suite")
+        .into_iter()
+        .map(|s| s as i16)
+        .collect()
+}
+
+fn dist_d100(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    distorted(original, ctx.bit_depth, 1 << 16)
+}
+fn dist_d50(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    distorted(original, ctx.bit_depth, 1 << 15)
+}
+
+/// Tremolo: the first time-varying edit, so the first that uses more of
+/// `EditCtx` than the bit depth.
+fn tremolo_f5(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    crate::audio_editor::tremolo(
+        &wide,
+        ctx.period,
+        ctx.bit_depth as u32,
+        ctx.start_index,
+        ctx.comp_size,
+    )
+    .expect("tremolo parameters and sample range validated by the suite")
+    .into_iter()
+    .map(|s| s as i16)
+    .collect()
 }
 
 pub fn registry() -> Vec<EditSpec> {
@@ -149,9 +269,12 @@ pub fn registry() -> Vec<EditSpec> {
             name: "gain2",
             circuit_prefix: "multiplier",
             apply: gain2,
+            apply2: None,
             factor: Some(2),
             clamps: false,
             bit_depths: &[16],
+            multi_input: false,
+            state_width: 2,
         },
         // Generalized family: any integer k > 1, saturating at the limits
         // of the bit depth, at 8 or 16 bits.
@@ -159,25 +282,34 @@ pub fn registry() -> Vec<EditSpec> {
             name: "gain_k2",
             circuit_prefix: "gain",
             apply: gain_k2,
+            apply2: None,
             factor: Some(2),
             clamps: true,
             bit_depths: &[8, 16],
+            multi_input: false,
+            state_width: 2,
         },
         EditSpec {
             name: "gain_k3",
             circuit_prefix: "gain",
             apply: gain_k3,
+            apply2: None,
             factor: Some(3),
             clamps: true,
             bit_depths: &[16],
+            multi_input: false,
+            state_width: 2,
         },
         EditSpec {
             name: "gain_k4",
             circuit_prefix: "gain",
             apply: gain_k4,
+            apply2: None,
             factor: Some(4),
             clamps: true,
             bit_depths: &[8, 16],
+            multi_input: false,
+            state_width: 2,
         },
         // Volume REDUCTION, k = 1/2^m. A separate circuit family: the
         // relation is a shift (floor division), not a multiply, and needs
@@ -186,17 +318,105 @@ pub fn registry() -> Vec<EditSpec> {
             name: "atten_m1",
             circuit_prefix: "atten",
             apply: atten_m1,
+            apply2: None,
             factor: Some(1), // m, not k — see circuit_name_for
             clamps: false,
             bit_depths: &[8, 16],
+            multi_input: false,
+            state_width: 2,
         },
         EditSpec {
             name: "atten_m2",
             circuit_prefix: "atten",
             apply: atten_m2,
+            apply2: None,
             factor: Some(2),
             clamps: false,
             bit_depths: &[8, 16],
+            multi_input: false,
+            state_width: 2,
+        },
+        // Time-varying: the LFO depends on absolute sample position, so
+        // the IVC state carries a proven counter alongside the hashes.
+        // `factor` here is the LFO frequency in Hz, used for the artifact
+        // stem (tremolo_b8_f5_B100).
+        // Merge: the only edit that is a function of TWO input streams.
+        // Its three-wide state is three hashes, not two hashes plus a
+        // counter, which is why `multi_input` exists.
+        // Concat: the duration counterpart to merge. Cheapest edit in
+        // the project - one shared BatchHasher and a per-step selector.
+        EditSpec {
+            name: "concat",
+            circuit_prefix: "concat",
+            apply: |_, _| unreachable!("concat uses apply2"),
+            apply2: Some(concat_streams),
+            factor: None,
+            clamps: false,
+            bit_depths: &[8],
+            multi_input: true,
+            state_width: 5,
+        },
+        EditSpec {
+            name: "merge",
+            circuit_prefix: "merge",
+            apply: |_, _| unreachable!("merge uses apply2"),
+            apply2: Some(merge_streams),
+            factor: None,
+            // Averaging cannot overflow, so no saturation is enforced.
+            clamps: false,
+            bit_depths: &[8],
+            multi_input: true,
+            state_width: 3,
+        },
+        // Crop: the only edit that is not one-in-one-out over the whole
+        // file. Folding just the kept window makes each step one-to-one
+        // again, and the proven counter is what pins which window it was.
+        // Cheapest edit in the project: no decompression, no arithmetic.
+        EditSpec {
+            name: "crop",
+            circuit_prefix: "crop",
+            apply: crop_window,
+            apply2: None,
+            factor: None,
+            clamps: false,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 3,
+        },
+        // Distortion: memoryless like gain, but the first edit needing a
+        // sign test (for |x|) as well as a clamp.
+        EditSpec {
+            name: "dist_d100",
+            circuit_prefix: "dist",
+            apply: dist_d100,
+            apply2: None,
+            factor: Some(100), // wet percent, for the artifact stem
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
+        EditSpec {
+            name: "dist_d50",
+            circuit_prefix: "dist",
+            apply: dist_d50,
+            apply2: None,
+            factor: Some(50),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
+        EditSpec {
+            name: "tremolo_f5",
+            circuit_prefix: "tremolo",
+            apply: tremolo_f5,
+            apply2: None,
+            factor: Some(5),
+            clamps: false,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 3,
         },
     ]
     // Not yet available: `distortion` (dist_step.circom unfinished, sign
@@ -230,6 +450,12 @@ pub struct SuiteConfig {
     pub skip_compressed: bool,
     pub dry_run: bool,
     pub cache_inputs: bool,
+    /// Second input WAV, for multi-input edits. Empty means "derive a
+    /// default": the suite refuses rather than silently inventing one.
+    pub audio_input_b: String,
+    /// LFO period in samples for time-varying edits. Default 8820 =
+    /// 5Hz at 44.1kHz, matching the compiled tremolo circuits.
+    pub lfo_period: usize,
     pub artifacts_dir: String,
     pub serialized_dir: String,
 }
@@ -251,6 +477,8 @@ impl Default for SuiteConfig {
             skip_compressed: false,
             dry_run: false,
             cache_inputs: true,
+            audio_input_b: String::new(),
+            lfo_period: 8820,
             artifacts_dir: "artifacts".to_string(),
             serialized_dir: "serialized".to_string(),
         }
@@ -330,6 +558,16 @@ pub fn circuit_name_for(
         // For the atten family the parameter is the shift m, so the stem
         // reads m1/m2 (k = 1/2^m) rather than a multiplier.
         ("atten", Some(m)) => format!("atten_b{}_m{}_B{}", bit_depth, m, batch_size),
+        // For tremolo the parameter is the LFO frequency in Hz.
+        ("tremolo", Some(f)) => format!("tremolo_b{}_f{}_B{}", bit_depth, f, batch_size),
+        // For distortion the parameter is the wet blend as a percentage.
+        ("dist", Some(d)) => format!("dist_b{}_d{}_B{}", bit_depth, d, batch_size),
+        // Crop takes no parameter: the window is carried by the counter.
+        ("crop", None) => format!("crop_b{}_B{}", bit_depth, batch_size),
+        // The default merge is the averaging variant; the clamped-sum
+        // artifacts keep the unsuffixed name as the cost control.
+        ("merge", None) => format!("merge_b{}_avg_B{}", bit_depth, batch_size),
+        ("concat", None) => format!("concat_b{}_B{}", bit_depth, batch_size),
         _ => format!("{}_b{}_B{}", prefix, bit_depth, batch_size),
     }
 }
@@ -342,6 +580,11 @@ pub fn circuit_source_dir(prefix: &str) -> &'static str {
     match prefix {
         "gain" => "circuits/edits/gain",
         "atten" => "circuits/edits/attenuation",
+        "tremolo" => "circuits/edits/tremolo",
+        "dist" => "circuits/edits/distortion",
+        "crop" => "circuits/edits/crop",
+        "merge" => "circuits/edits/merge",
+        "concat" => "circuits/edits/concat",
         // The gain2 baseline still lives in the pre-reorganisation tree.
         _ => "circuits/old",
     }

@@ -14,6 +14,11 @@ use serde_json::json;
 pub struct MultiplierInput {
     pub original: Vec<Vec<String>>,
     pub edited: Vec<Vec<String>>,
+    /// Second input stream, for multi-input edits such as merge. Absent
+    /// for the single-input edits, so their serialized JSON is unchanged
+    /// and previously generated files stay loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_b: Option<Vec<Vec<String>>>,
 }
 
 /// Identity of a benchmark case, carried into the metrics so a results row is
@@ -58,6 +63,17 @@ pub struct ProofMetrics {
     pub proof_size_bytes: usize,
     pub final_hash_original: String,
     pub final_hash_edited: String,
+    /// Final value of the proven sample counter, for time-varying edits
+    /// (tremolo, crop). `None` for memoryless edits, and `None` for merge,
+    /// whose third state element is a hash rather than a counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_counter: Option<String>,
+    /// Final running commitment of the SECOND input stream, for
+    /// multi-input edits. The three-wide IVC state is shared with
+    /// tremolo/crop but means something different here, so the two are
+    /// recorded in separate fields rather than one ambiguous slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_hash_b: Option<String>,
 
     /// Peak process RSS, in bytes, sampled during each phase and overall.
     ///
@@ -177,6 +193,24 @@ pub struct RunConfig<'a> {
     /// Skip the CompressedSNARK phase (setup/prove/verify) for fast sweeps.
     pub skip_compressed: bool,
     pub verbose: bool,
+    /// True when the third IVC state element is a second stream's hash
+    /// rather than a sample counter, so the metrics record it correctly.
+    pub multi_input: bool,
+    /// Non-zero initial values for the public IVC state, as
+    /// (index, value) pairs. Every element defaults to zero - both
+    /// running hashes start empty and the sample counter starts at 0 -
+    /// but concat carries its split point in the state, and a zero there
+    /// would make the phase selector claim the entire stream belongs to
+    /// stream B while the divisibility check passed trivially. So it has
+    /// to be set explicitly rather than assumed.
+    pub initial_state: Vec<(usize, u64)>,
+    /// Width of the primary circuit's public IVC state. Memoryless edits
+    /// use 2 (the two running hashes); a time-varying edit such as
+    /// tremolo uses 3, adding a proven sample counter. This MUST match
+    /// the compiled circuit's `step_in` width or Nova rejects the
+    /// witness, so it comes from the edit registry rather than being
+    /// assumed.
+    pub state_width: usize,
 }
 
 fn ms(d: std::time::Duration) -> f64 {
@@ -228,6 +262,15 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     if input_data.original.is_empty() {
         return Err(ProofError::InputShape("no batches".to_string()));
     }
+    if let Some(b) = &input_data.stream_b {
+        if b.len() != input_data.original.len() {
+            return Err(ProofError::InputShape(format!(
+                "stream_b has {} batches, original has {}",
+                b.len(),
+                input_data.original.len()
+            )));
+        }
+    }
 
     let iteration_count = input_data.original.len();
     let elements_per_batch = input_data.original[0].len();
@@ -255,15 +298,40 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         println!();
     }
 
+    // Signal names differ for multi-input edits: merge's step circuit
+    // takes (a, b, out) rather than (orig, edit), because neither input
+    // is "the original" in the single-stream sense.
     let mut private_inputs = Vec::new();
     for i in 0..iteration_count {
         let mut private_input = HashMap::new();
-        private_input.insert("orig".to_string(), json!(input_data.original[i]));
-        private_input.insert("edit".to_string(), json!(input_data.edited[i]));
+        match &input_data.stream_b {
+            Some(b) => {
+                private_input.insert("a".to_string(), json!(input_data.original[i]));
+                private_input.insert("b".to_string(), json!(b[i]));
+                private_input.insert("out".to_string(), json!(input_data.edited[i]));
+            }
+            None => {
+                private_input.insert("orig".to_string(), json!(input_data.original[i]));
+                private_input.insert("edit".to_string(), json!(input_data.edited[i]));
+            }
+        }
         private_inputs.push(private_input);
     }
 
-    let start_public_input = [F::<G1>::from(0), F::<G1>::from(0)];
+    // All state elements start at zero: both running hashes, and the
+    // sample counter for time-varying edits (the stream starts at index
+    // 0). Sized from the registry so a 3-wide circuit is not handed a
+    // 2-wide input.
+    let mut start_public_input: Vec<F<G1>> = vec![F::<G1>::from(0); cfg.state_width];
+    for &(i, v) in &cfg.initial_state {
+        if i >= cfg.state_width {
+            return Err(ProofError::InputShape(format!(
+                "initial_state index {} is outside a {}-wide state",
+                i, cfg.state_width
+            )));
+        }
+        start_public_input[i] = F::<G1>::from(v);
+    }
 
     // Baseline taken after inputs are parsed and before any proving work,
     // so the per-phase deltas attribute memory to proving rather than to
@@ -305,7 +373,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         FileLocation::PathBuf(witness_generator_file),
         r1cs,
         private_inputs,
-        start_public_input.to_vec(),
+        start_public_input.clone(),
         &pp,
     )
     .map_err(|e| ProofError::Prove(format!("{:?}", e)))?;
@@ -332,6 +400,16 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     let final_primary_state = res.0;
     let final_hash_original = format!("{:?}", &final_primary_state[0]);
     let final_hash_edited = format!("{:?}", &final_primary_state[1]);
+    // For a time-varying edit the third state element is the proven
+    // sample counter; the verifier checks it equals N, which is what
+    // binds the edit to stream positions rather than letting the prover
+    // choose a flattering phase.
+    let third = final_primary_state.get(2).map(|c| format!("{:?}", c));
+    let (final_counter, final_hash_b) = if cfg.multi_input {
+        (None, third)
+    } else {
+        (third, None)
+    };
 
     if cfg.verbose {
         println!("RecursiveSNARK::verify took {:?}ms", recursive_verify_ms);
@@ -380,7 +458,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
             .verify(
                 &vk,
                 iteration_count,
-                start_public_input.to_vec(),
+                start_public_input.clone(),
                 z0_secondary.to_vec(),
             )
             .map_err(|e| ProofError::CompressedVerify(format!("{:?}", e)))?;
@@ -410,6 +488,8 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         proof_size_bytes,
         final_hash_original,
         final_hash_edited,
+        final_counter,
+        final_hash_b,
         peak_rss_bytes: [
             peak_rss_public_params_bytes,
             peak_rss_recursive_prove_bytes,
@@ -453,6 +533,11 @@ pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str, json_input_f
         json_input_filepath,
         skip_compressed: false,
         verbose: true,
+        multi_input: false,
+        initial_state: Vec::new(),
+        // The demo wrapper only drives memoryless edits; a time-varying
+        // one must go through the bench suite, which knows its width.
+        state_width: 2,
     };
 
     match run_proof(&cfg, &meta) {

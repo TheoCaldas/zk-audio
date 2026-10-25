@@ -4,7 +4,7 @@
 
 use zk_audio::{
     audio_parser,
-    bench::config::{circuit_name_for, comp_size_for, find_edit},
+    bench::config::{circuit_name_for, comp_size_for, find_edit, EditCtx},
     circuit,
 };
 
@@ -59,7 +59,14 @@ fn main() {
     );
 
     /* Apply Edit */
-    let edited = (edit.apply)(original, bit_depth);
+    let ctx = EditCtx {
+        bit_depth,
+        batch_size,
+        start_index: 0,
+        comp_size,
+        period: 8820, // 5Hz at 44.1kHz, for time-varying edits
+    };
+    let edited = (edit.apply)(original, &ctx);
 
     /* Serialize Samples */
     let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
