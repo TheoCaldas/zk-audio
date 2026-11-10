@@ -442,11 +442,22 @@ def plot_mpl(fig_data, outpath, logx, dpi):
 
     fig.suptitle(meta["title"], x=0.015, ha="left", fontsize=13.5,
                  fontweight="bold", y=0.985)
+    legend_rows = 0
+    if len(groups) > 1 or groups and groups[0][0]:
+        ncol_probe = 4 if len(groups) > 6 else (3 if len(groups) > 2 else len(groups))
+        legend_rows = -(-len(groups) // max(1, ncol_probe))
     ax.set_title(meta["header"] + "\n" + meta["subheader"],
-                 loc="left", fontsize=8.8, color="#444", pad=9)
+                 loc="left", fontsize=8.8, color="#444",
+                 pad=9 + 15 * legend_rows)
 
     if len(groups) > 1 or groups and groups[0][0]:
-        ax.legend(frameon=False, fontsize=8.6, loc="best")
+        # Outside the axes, under the header: `loc="best"` places the legend
+        # inside the data area, where on a dense multi-series figure it sits
+        # on top of the curves it is describing.
+        ncol = 4 if len(groups) > 6 else (3 if len(groups) > 2 else len(groups))
+        ax.legend(frameon=False, fontsize=8.6, ncol=max(1, ncol),
+                  loc="lower left", bbox_to_anchor=(0, 1.005),
+                  borderaxespad=0, columnspacing=1.6, handlelength=1.8)
 
     if meta.get("annotate_spread"):
         lbl = spread_label(groups)
@@ -460,7 +471,7 @@ def plot_mpl(fig_data, outpath, logx, dpi):
         fig.text(0.015, 0.012, "note: " + meta["note"], fontsize=7.4,
                  color="#666", ha="left")
 
-    fig.tight_layout(rect=(0, 0.035, 1, 0.96))
+    fig.tight_layout(rect=(0, 0.035, 1, 0.955))
     fig.savefig(outpath, dpi=dpi)
     plt.close(fig)
 
