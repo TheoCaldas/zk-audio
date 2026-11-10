@@ -136,7 +136,10 @@ template DistortSample(bit_depth, blend, v_bits) {
 }
 
 template BatchCheckDistort(batch_size, bit_depth, blend) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
     var half = 1 << (bit_depth - 1);
     var scale = 1 << 16;
 

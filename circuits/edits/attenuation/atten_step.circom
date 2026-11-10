@@ -101,7 +101,10 @@ template ExpectedEditAtten(size, bit_depth, m) {
 }
 
 template BatchCheckAtten(batch_size, bit_depth, m) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
 
     signal input orig[batch_size];
     signal input edit[batch_size];

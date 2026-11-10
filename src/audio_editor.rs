@@ -612,6 +612,57 @@ mod tests {
         }
     }
 
+    /// bd=24 is the depth where `bit_depth` does not divide `256 - bit_depth`
+    /// (232 = 9*24 + 16), so it exercises the `Decompressor` path that
+    /// decomposes `size * bit_depth` bits rather than all of `nBits`. The
+    /// gain relation itself is depth-generic, but this pins it down at the
+    /// depth where the packing is irregular.
+    ///
+    /// k=2 (the benchmarked relation) runs the FULL 2^24 range. The other
+    /// factors stride, since each adds another 16.7M iterations for a
+    /// relation already shown exhaustively at k=2 and at 8/16 bits.
+    #[test]
+    fn rust_and_circuit_agree_exhaustively_24bit() {
+        let half = 1i64 << 23;
+
+        for orig in -half..half {
+            let rust = gain(&[orig as i32], 2, 24).unwrap()[0] as i64 + half;
+            let circuit = circuit_clamped_gain_normalized(orig + half, 2, 24);
+            assert_eq!(
+                rust, circuit,
+                "disagreement at bd=24 k=2 orig={}: rust={} circuit={}",
+                orig, rust, circuit
+            );
+        }
+
+        // Strided sweep plus the saturation boundaries, where clamping
+        // actually fires and an off-by-one would hide between strides.
+        for k in [3u32, 4, 9] {
+            let mut probes: Vec<i64> = (-half..half).step_by(1021).collect();
+            probes.extend_from_slice(&[
+                -half,
+                -half + 1,
+                -1,
+                0,
+                1,
+                half / k as i64 - 1,
+                half / k as i64,
+                half / k as i64 + 1,
+                half - 2,
+                half - 1,
+            ]);
+            for orig in probes {
+                let rust = gain(&[orig as i32], k, 24).unwrap()[0] as i64 + half;
+                let circuit = circuit_clamped_gain_normalized(orig + half, k, 24);
+                assert_eq!(
+                    rust, circuit,
+                    "disagreement at bd=24 k={} orig={}: rust={} circuit={}",
+                    k, orig, rust, circuit
+                );
+            }
+        }
+    }
+
     /// The in-circuit attenuation, transcribed from `AttenuatedGain` in
     /// `circuits/edits/attenuation/atten_step.circom`, operating in NORMALIZED space.
     fn circuit_atten_normalized(orig_n: i64, m: u32, bit_depth: u32) -> i64 {

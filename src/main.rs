@@ -41,7 +41,10 @@ fn main() {
     let witness_gen_filepath = &format!("artifacts/{}_js/{}.wasm", circuit_name, circuit_name);
 
     /* Read Audio Samples */
-    let original = audio_parser::read_samples(&format!("raw_audios/{}.wav", input_name));
+    // Read at i32 so 24-bit samples survive; the edit registry and the
+    // depth-generic serializer both take i32 now.
+    let (original, _file_bits) =
+        audio_parser::read_samples_signed(&format!("raw_audios/{}.wav", input_name));
     assert!(
         original.len() >= max_size,
         "audio has {} samples, need {}",
@@ -72,7 +75,7 @@ fn main() {
     let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
     // Depth-generic serializer; byte-identical to the legacy 16-bit one at
     // bit_depth=16, and the only correct choice at 8.
-    let orig_wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+    let orig_wide: Vec<i32> = original.to_vec();
     let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
     audio_parser::serialize_samples_at(
         &orig_wide,

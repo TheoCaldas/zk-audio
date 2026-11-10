@@ -14,9 +14,13 @@ pub fn offset_for(bit_depth: usize) -> i64 {
     1i64 << (bit_depth - 1)
 }
 
-/// Bit depths with a compiled step circuit. Only 16 for now; the rest of the
-/// pipeline is parameterized so adding one is a config change plus a circuit.
-pub const SUPPORTED_BIT_DEPTHS: &[usize] = &[8, 16];
+/// Bit depths with a compiled step circuit. The rest of the pipeline is
+/// parameterized, so adding one is a config change plus a circuit.
+///
+/// Note 24 is the only depth where `bit_depth` does not divide
+/// `256 - bit_depth` (232 = 9*24 + 16); `Decompressor` handles that by
+/// decomposing `size * bit_depth` bits rather than `256 - bit_depth`.
+pub const SUPPORTED_BIT_DEPTHS: &[usize] = &[8, 16, 24];
 
 /// N ladder: 60, 600, 6000, ... capped at `max_n`.
 pub fn n_ladder(max_n: usize) -> Vec<usize> {
@@ -100,13 +104,13 @@ pub struct EditCtx {
 pub struct EditSpec {
     pub name: &'static str,
     pub circuit_prefix: &'static str,
-    pub apply: fn(&[i16], &EditCtx) -> Vec<i16>,
+    pub apply: fn(&[i32], &EditCtx) -> Vec<i32>,
     /// For multi-input edits, the two-stream relation. When present the
     /// suite reads a second WAV and `apply` is ignored: a function of two
     /// streams cannot be expressed by the single-stream signature, and
     /// faking it (e.g. by closing over stream B) would hide the second
     /// input from the manifest.
-    pub apply2: Option<fn(&[i16], &[i16], &EditCtx) -> Vec<i16>>,
+    pub apply2: Option<fn(&[i32], &[i32], &EditCtx) -> Vec<i32>>,
     /// Gain factor k, for the generalized family. `None` for edits whose
     /// circuit does not take a factor.
     pub factor: Option<u32>,
@@ -131,47 +135,39 @@ pub struct EditSpec {
 /// to i16 range on signed samples — the circuit has no clamping, so the two are
 /// different functions. Wiring the clamping version here would prove the wrong
 /// relation.
-fn gain2(original: &[i16], _ctx: &EditCtx) -> Vec<i16> {
+fn gain2(original: &[i32], _ctx: &EditCtx) -> Vec<i32> {
     original.iter().map(|x| x * 2).collect()
 }
 
 /// The generalized, clamping gain. Unlike `gain2` this IS
 /// `audio_editor::gain` — the circuit saturates too, so the clamping
 /// reference is now the correct mirror rather than a mismatch.
-fn clamped_gain(original: &[i16], bit_depth: usize, k: u32) -> Vec<i16> {
-    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
-    crate::audio_editor::gain(&wide, k, bit_depth as u32)
+fn clamped_gain(original: &[i32], bit_depth: usize, k: u32) -> Vec<i32> {
+    crate::audio_editor::gain(original, k, bit_depth as u32)
         .expect("gain factor and sample range validated by the suite")
-        .into_iter()
-        .map(|s| s as i16)
-        .collect()
 }
 
-fn gain_k2(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn gain_k2(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     clamped_gain(original, ctx.bit_depth, 2)
 }
-fn gain_k3(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn gain_k3(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     clamped_gain(original, ctx.bit_depth, 3)
 }
-fn gain_k4(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn gain_k4(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     clamped_gain(original, ctx.bit_depth, 4)
 }
 
 /// Power-of-two attenuation: k = 1/2^m. Floor rounding, no clamping
 /// needed (attenuation shrinks magnitude).
-fn attenuated(original: &[i16], bit_depth: usize, m: u32) -> Vec<i16> {
-    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
-    crate::audio_editor::attenuate(&wide, m, bit_depth as u32)
+fn attenuated(original: &[i32], bit_depth: usize, m: u32) -> Vec<i32> {
+    crate::audio_editor::attenuate(original, m, bit_depth as u32)
         .expect("shift and sample range validated by the suite")
-        .into_iter()
-        .map(|s| s as i16)
-        .collect()
 }
 
-fn atten_m1(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn atten_m1(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     attenuated(original, ctx.bit_depth, 1)
 }
-fn atten_m2(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn atten_m2(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     attenuated(original, ctx.bit_depth, 2)
 }
 
@@ -182,7 +178,7 @@ fn atten_m2(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
 /// stream A, the second from stream B, which keeps the boundary
 /// fold-aligned whenever N is (and N always is, by the divisibility
 /// the case matrix already enforces).
-fn concat_streams(a: &[i16], b: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn concat_streams(a: &[i32], b: &[i32], ctx: &EditCtx) -> Vec<i32> {
     // The caller hands equal-length slices; the split is at the
     // fold-aligned midpoint, so the output is A's first half followed by
     // B's second half.
@@ -207,57 +203,44 @@ fn concat_streams(a: &[i16], b: &[i16], ctx: &EditCtx) -> Vec<i16> {
 /// Averaging rather than clamped summing: it cannot overflow, so the
 /// circuit needs no saturation logic and costs 20% fewer constraints
 /// (248,400 vs 310,400 at bd=8/B=100).
-fn merge_streams(a: &[i16], b: &[i16], ctx: &EditCtx) -> Vec<i16> {
-    let wa: Vec<i32> = a.iter().map(|&s| s as i32).collect();
-    let wb: Vec<i32> = b.iter().map(|&s| s as i32).collect();
-    crate::audio_editor::merge(&wa, &wb, ctx.bit_depth as u32)
+fn merge_streams(a: &[i32], b: &[i32], ctx: &EditCtx) -> Vec<i32> {
+    crate::audio_editor::merge(a, b, ctx.bit_depth as u32)
         .expect("stream lengths and ranges validated by the suite")
-        .into_iter()
-        .map(|s| s as i16)
-        .collect()
 }
 
 /// Crop: a verbatim contiguous window. The suite proves a prefix, so the
 /// window starts at `ctx.start_index` (0) and runs for the whole slice -
 /// the interesting variable is the COUNTER the circuit proves, not the
 /// values, which pass through unchanged.
-fn crop_window(original: &[i16], _ctx: &EditCtx) -> Vec<i16> {
+fn crop_window(original: &[i32], _ctx: &EditCtx) -> Vec<i32> {
     original.to_vec()
 }
 
 /// Distortion per `dist 1.c`: rectifier fold blended with the dry
 /// signal. `blend` is the wet amount at scale 2^16.
-fn distorted(original: &[i16], bit_depth: usize, blend: i64) -> Vec<i16> {
-    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
-    crate::audio_editor::distort(&wide, blend, bit_depth as u32)
+fn distorted(original: &[i32], bit_depth: usize, blend: i64) -> Vec<i32> {
+    crate::audio_editor::distort(original, blend, bit_depth as u32)
         .expect("blend and sample range validated by the suite")
-        .into_iter()
-        .map(|s| s as i16)
-        .collect()
 }
 
-fn dist_d100(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn dist_d100(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     distorted(original, ctx.bit_depth, 1 << 16)
 }
-fn dist_d50(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
+fn dist_d50(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     distorted(original, ctx.bit_depth, 1 << 15)
 }
 
 /// Tremolo: the first time-varying edit, so the first that uses more of
 /// `EditCtx` than the bit depth.
-fn tremolo_f5(original: &[i16], ctx: &EditCtx) -> Vec<i16> {
-    let wide: Vec<i32> = original.iter().map(|&s| s as i32).collect();
+fn tremolo_f5(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
     crate::audio_editor::tremolo(
-        &wide,
+        original,
         ctx.period,
         ctx.bit_depth as u32,
         ctx.start_index,
         ctx.comp_size,
     )
     .expect("tremolo parameters and sample range validated by the suite")
-    .into_iter()
-    .map(|s| s as i16)
-    .collect()
 }
 
 pub fn registry() -> Vec<EditSpec> {
@@ -285,7 +268,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(2),
             clamps: true,
-            bit_depths: &[8, 16],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },

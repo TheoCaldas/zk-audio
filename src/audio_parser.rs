@@ -481,6 +481,50 @@ mod packing_tests {
     fn comp_size_matches_circom_formula() {
         assert_eq!(comp_size_for(16), 15);
         assert_eq!(comp_size_for(8), 31);
+        // 24 is the irregular case: 232 = 9*24 + 16, so the packed element
+        // uses only 216 of the 232 available bits. Circom must compute this
+        // with integer division (`\`), not field division (`/`).
+        assert_eq!(comp_size_for(24), 9);
+    }
+
+    /// At bit_depth=24 the packed element has 16 unused high bits. The
+    /// packer must leave them ZERO: `Decompressor` decomposes exactly
+    /// `size * bit_depth` bits, so a packed value with any bit set at or
+    /// above 2^216 fails the in-circuit range check.
+    #[test]
+    fn packer_leaves_no_slack_bits_at_24bit() {
+        use num_bigint::BigUint;
+        let max = (1i32 << 24) - 1;
+        // Nine max-valued samples: the densest element the packer can make.
+        let samples: Vec<i32> = vec![max; 9];
+        let packed = compress_samples_bigint_at(&samples, 24);
+        assert_eq!(packed.len(), 1);
+        let limit = BigUint::from(1u32) << 216usize;
+        assert!(
+            packed[0] < limit,
+            "packed element {} >= 2^216; high bits would fail Num2Bits(216)",
+            packed[0]
+        );
+        assert_eq!(packed[0], &limit - BigUint::from(1u32));
+    }
+
+    /// Round-trip at the irregular depth: unpacking the packed element
+    /// with the circuit's positional weights must return the samples.
+    #[test]
+    fn pack_unpack_round_trips_at_24bit() {
+        let samples: Vec<i32> = (0..27).map(|i| (i * 613_337) % (1 << 24)).collect();
+        let packed = compress_samples_bigint_at(&samples, 24);
+        assert_eq!(packed.len(), 3, "27 samples / comp_size 9 = 3 elements");
+        let mask = BigUint::from((1u64 << 24) - 1);
+        let mut out = Vec::new();
+        for elem in &packed {
+            for i in 0..9usize {
+                let digit = (elem >> (24 * i)) & &mask;
+                let d: u64 = digit.try_into().expect("24-bit digit fits u64");
+                out.push(d as i32);
+            }
+        }
+        assert_eq!(out, samples);
     }
 
     /// The generic bit-shift packer must agree byte-for-byte with the

@@ -88,7 +88,10 @@ template ExpectedEditGain(size, bit_depth, k, n_bits) {
 }
 
 template BatchCheckGain(batch_size, bit_depth, k) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
 
     // Width needed to compare k*(2^bit_depth - 1) without wrapping.
     // Computed here rather than passed in, so a caller cannot silently

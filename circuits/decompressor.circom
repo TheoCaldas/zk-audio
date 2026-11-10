@@ -4,12 +4,21 @@ include "circom/bitify.circom";
 
 template Decompressor(bit_depth) {
     var nBits = 256 - bit_depth;
-    var size = nBits / bit_depth;
+    var size = nBits \ bit_depth;
+    // Decompose EXACTLY the bits the digits occupy, not all of `nBits`.
+    // Those coincide when bit_depth divides nBits (8, 16, 32), but at
+    // bit_depth=24 nBits=232 while the digits span only 9*24=216 bits.
+    // Using nBits there would leave 16 high bits range-checked as bits yet
+    // wired to nothing, so 2^16 distinct `in` values would decompress to
+    // the same samples and the packed element would no longer uniquely
+    // determine the audio it commits to. Decomposing `usedBits` forces
+    // in < 2^usedBits, which restores that and costs fewer constraints.
+    var usedBits = size * bit_depth;
 
     signal input in;
     signal output out[size];
 
-    component toBits = Num2Bits(nBits);
+    component toBits = Num2Bits(usedBits);
     toBits.in <== in;
 
     component toNum[size];
@@ -42,7 +51,7 @@ template Decompressor(bit_depth) {
 // before this point, independent of this optimization.
 template Recompressor(bit_depth) {
     var nBits = 256 - bit_depth;
-    var size = nBits / bit_depth;
+    var size = nBits \ bit_depth;
 
     signal input in[size];
     signal output out;

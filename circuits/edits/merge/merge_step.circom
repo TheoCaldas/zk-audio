@@ -126,7 +126,10 @@ template AverageSum(bit_depth, t_bits) {
 // Both share the hashing and decompression; only the per-sample
 // combiner differs, so the two variants are directly comparable.
 template BatchCheckMerge(batch_size, bit_depth, average) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
 
     // s = a_n + b_n needs bit_depth + 1 bits (max 2*(2^bd - 1)).
     // ClampSum's comparators want one extra for safety; AverageSum needs

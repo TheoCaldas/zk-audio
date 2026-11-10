@@ -161,7 +161,10 @@ template ModulateSample(bit_depth, u_bits) {
 }
 
 template BatchCheckTremolo(batch_size, bit_depth, period, table_n) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
     var half = 1 << (bit_depth - 1);
     var scale = 1 << 16;
 
@@ -218,7 +221,10 @@ template BatchCheckTremolo(batch_size, bit_depth, period, table_n) {
 }
 
 template Tremolo(batch_size, bit_depth, period, table_n) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
 
     //=== IVC state: two hashes PLUS the sample counter ===//
     signal input step_in[3];   // (prev_orig_hash, prev_edit_hash, sample_index)

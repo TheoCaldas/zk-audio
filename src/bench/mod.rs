@@ -40,7 +40,7 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
 
     // Multi-input edits need a second stream; refuse rather than invent
     // one, so a run's sources are always explicit in the manifest.
-    let stream_b: Option<Vec<i16>> = if edit.apply2.is_some() {
+    let stream_b: Option<Vec<i32>> = if edit.apply2.is_some() {
         if cfg.audio_input_b.is_empty() {
             return Err(format!(
                 "edit '{}' takes two streams; pass --input-b <wav>",
@@ -58,7 +58,8 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
             ));
         }
         println!("Reading audio B: {} ({} samples)", cfg.audio_input_b, wide_b.len());
-        Some(wide_b.iter().map(|&s| s as i16).collect())
+        // Kept at i32: 24-bit samples do not fit i16.
+        Some(wide_b)
     } else {
         None
     };
@@ -84,7 +85,8 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
             cfg.bit_depth, cfg.audio_input, file_bits, file_bits
         ));
     }
-    let original: Vec<i16> = original_wide.iter().map(|&s| s as i16).collect();
+    // Kept at the reader's i32 width so 24-bit samples survive intact.
+    let original: Vec<i32> = original_wide;
     let available = original.len();
     println!("Available samples: {}", available);
 
@@ -178,7 +180,7 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
             comp_size: comp,
             period: cfg.lfo_period,
         };
-        let slice_b: Option<&[i16]> = stream_b.as_ref().map(|b| &b[0..c.total_samples]);
+        let slice_b: Option<&[i32]> = stream_b.as_ref().map(|b| &b[0..c.total_samples]);
         let edited = match (edit.apply2, slice_b) {
             (Some(f2), Some(b)) => f2(slice, b, &ctx),
             _ => (edit.apply)(slice, &ctx),
@@ -288,9 +290,9 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
 /// with its contents.
 fn ensure_input(
     c: &Case,
-    original: &[i16],
-    edited: &[i16],
-    stream_b: Option<&[i16]>,
+    original: &[i32],
+    edited: &[i32],
+    stream_b: Option<&[i32]>,
     comp: usize,
 ) -> Result<(), String> {
     if Path::new(&c.input_path).exists() && validate_shape(c, comp).is_ok() {

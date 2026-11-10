@@ -82,7 +82,10 @@ template CropCheck(batch_size) {
 }
 
 template Crop(batch_size, bit_depth) {
-    var comp_size = (256 - bit_depth) / bit_depth;
+        // Integer division (\), not field division (/): at bit_depth=24
+    // 232/24 is not exact, and `/` would compute a modular inverse
+    // instead of 9, which circom then rejects as an array size.
+    var comp_size = (256 - bit_depth) \ bit_depth;
 
     //=== IVC state: two hashes PLUS the sample counter ===//
     // The counter is what distinguishes a crop from a no-op: it makes
