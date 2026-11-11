@@ -272,6 +272,21 @@ pub fn registry() -> Vec<EditSpec> {
             multi_input: false,
             state_width: 2,
         },
+        // Ablation of `gain_k2` with the Poseidon commitment chain removed
+        // (`gain_step_nohash.circom`). The relation proven over each batch is
+        // identical; what is gone is the binding between the proof and any
+        // particular recording. Benchmark-only - it is NOT a provenance proof.
+        EditSpec {
+            name: "gain_k2_nohash",
+            circuit_prefix: "gain_nohash",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
         EditSpec {
             name: "gain_k3",
             circuit_prefix: "gain",
@@ -551,6 +566,9 @@ pub fn circuit_name_for(
         // artifacts keep the unsuffixed name as the cost control.
         ("merge", None) => format!("merge_b{}_avg_B{}", bit_depth, batch_size),
         ("concat", None) => format!("concat_b{}_B{}", bit_depth, batch_size),
+        // Ablation circuit: gain with the Poseidon commitment chain removed.
+        // Measures what the hashing costs; NOT a sound provenance proof.
+        ("gain_nohash", Some(k)) => format!("gain_nohash_b{}_k{}_B{}", bit_depth, k, batch_size),
         _ => format!("{}_b{}_B{}", prefix, bit_depth, batch_size),
     }
 }
@@ -562,6 +580,7 @@ pub fn circuit_name_for(
 pub fn circuit_source_dir(prefix: &str) -> &'static str {
     match prefix {
         "gain" => "circuits/edits/gain",
+        "gain_nohash" => "circuits/edits/gain",
         "atten" => "circuits/edits/attenuation",
         "tremolo" => "circuits/edits/tremolo",
         "dist" => "circuits/edits/distortion",
