@@ -9,3 +9,4 @@
 recursive_snark.json
 input.json
 .DS_Store
+docs/analyses/*
