@@ -1,9 +1,16 @@
 use std::{collections::HashMap, env::current_dir, fmt, path::Path, time::Instant};
 
-use nova_scotia::{
-    circom::reader::load_r1cs, create_public_params, create_recursive_circuit, FileLocation, F, S,
-};
-use nova_snark::{CompressedSNARK, PublicParams};
+use crate::circom_bridge::{circuit::CircomCircuit, reader::{load_r1cs, FileLocation}};
+use nova_snark::nova::{CompressedSNARK, PublicParams};
+use nova_snark::traits::Engine;
+
+/// Scalar field of an engine - nova-scotia's `F<G>`, which went away with
+/// the `Group` -> `Engine` rename in nova-snark 0.76.
+type F<E> = <E as Engine>::Scalar;
+/// Spartan + IPA-PC, the compressing SNARK. Same scheme as before; only
+/// the module path and the trait bound changed.
+type EE<E> = nova_snark::provider::ipa_pc::EvaluationEngine<E>;
+type S<E> = nova_snark::spartan::snark::RelaxedR1CSSNARK<E, EE<E>>;
 
 use crate::bench::memory::{self, PeakSampler};
 use serde::{Deserialize, Serialize};
@@ -220,8 +227,8 @@ fn ms(d: std::time::Duration) -> f64 {
 /// Runs one proof and returns its metrics. Errors are returned rather than
 /// panicking so a sweep can record a failed cell and continue.
 pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, ProofError> {
-    type G1 = pasta_curves::pallas::Point;
-    type G2 = pasta_curves::vesta::Point;
+    type G1 = nova_snark::provider::PallasEngine;
+    type G2 = nova_snark::provider::VestaEngine;
 
     for p in [cfg.circuit_filepath, cfg.witness_gen_filepath, cfg.json_input_filepath] {
         if !Path::new(p).exists() {
@@ -340,7 +347,12 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
 
     let sampler = PeakSampler::start();
     let start = Instant::now();
-    let pp: PublicParams<G1, G2, _, _> = create_public_params(r1cs.clone());
+    let pp: PublicParams<G1, G2, CircomCircuit<F<G1>>> = PublicParams::setup(
+        &CircomCircuit { r1cs: r1cs.clone(), witness: None },
+        &*nova_snark::traits::snark::default_ck_hint(),
+        &*nova_snark::traits::snark::default_ck_hint(),
+    )
+    .expect("public params setup");
     let public_params_ms = ms(start.elapsed());
     let peak_rss_public_params_bytes = sampler.stop();
 
@@ -369,14 +381,17 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     // it drives per step - so sampling is the only way to see it.
     let sampler = PeakSampler::start();
     let start = Instant::now();
-    let recursive_snark = create_recursive_circuit(
-        FileLocation::PathBuf(witness_generator_file),
+    // nova-scotia is pinned to nova-snark 0.23 and cannot build against
+    // 0.76, so the node-subprocess path is gone; witnesses are always
+    // computed in-process now.
+    let recursive_snark = crate::witness::create_recursive_circuit_inproc::<G1, G2>(
+        &witness_generator_file,
         r1cs,
         private_inputs,
         start_public_input.clone(),
         &pp,
     )
-    .map_err(|e| ProofError::Prove(format!("{:?}", e)))?;
+    .map_err(ProofError::Prove)?;
     let recursive_prove_ms = ms(start.elapsed());
     let peak_rss_recursive_prove_bytes = sampler.stop();
 
@@ -387,19 +402,24 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         }
     }
 
-    let z0_secondary = [F::<G2>::from(0)];
 
     if cfg.verbose {
         println!("Verifying a RecursiveSNARK...");
     }
     let start = Instant::now();
-    let res = recursive_snark.verify(&pp, iteration_count, &start_public_input, &z0_secondary);
+    let res = recursive_snark.verify(&pp, iteration_count, &start_public_input);
     let recursive_verify_ms = ms(start.elapsed());
 
     let res = res.map_err(|e| ProofError::RecursiveVerify(format!("{:?}", e)))?;
-    let final_primary_state = res.0;
+    let final_primary_state = res;
     let final_hash_original = format!("{:?}", &final_primary_state[0]);
-    let final_hash_edited = format!("{:?}", &final_primary_state[1]);
+    // A circuit that commits to the original stream only (the edit digest
+    // being recomputable from it plus the proven relation) has a 1-wide
+    // state, so this slot may not exist.
+    let final_hash_edited = final_primary_state
+        .get(1)
+        .map(|h| format!("{:?}", h))
+        .unwrap_or_else(|| "n/a (single-commitment circuit)".to_string());
     // For a time-varying edit the third state element is the proven
     // sample counter; the verifier checks it equals N, which is what
     // binds the edit to stream positions rather than letting the prover
@@ -435,13 +455,13 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         let sampler = PeakSampler::start();
 
         let start = Instant::now();
-        let (pk, vk) = CompressedSNARK::<_, _, _, _, S<G1>, S<G2>>::setup(&pp)
+        let (pk, vk) = CompressedSNARK::<_, _, _, S<G1>, S<G2>>::setup(&pp)
             .map_err(|e| ProofError::CompressedSetup(format!("{:?}", e)))?;
         compressed_setup_ms = ms(start.elapsed());
 
         let start = Instant::now();
         let compressed_snark =
-            CompressedSNARK::<_, _, _, _, S<G1>, S<G2>>::prove(&pp, &pk, &recursive_snark)
+            CompressedSNARK::<_, _, _, S<G1>, S<G2>>::prove(&pp, &pk, &recursive_snark)
                 .map_err(|e| ProofError::CompressedProve(format!("{:?}", e)))?;
         compressed_prove_ms = ms(start.elapsed());
         peak_rss_compressed_prove_bytes = sampler.stop();
@@ -455,12 +475,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
 
         let start = Instant::now();
         compressed_snark
-            .verify(
-                &vk,
-                iteration_count,
-                start_public_input.clone(),
-                z0_secondary.to_vec(),
-            )
+            .verify(&vk, iteration_count, &start_public_input)
             .map_err(|e| ProofError::CompressedVerify(format!("{:?}", e)))?;
         compressed_verify_ms = ms(start.elapsed());
 
