@@ -287,6 +287,96 @@ pub fn registry() -> Vec<EditSpec> {
             multi_input: false,
             state_width: 2,
         },
+        // Arity-16 Poseidon tree instead of the arity-2 chain. Same proven
+        // relation; the batch digest differs, so the final commitment does
+        // not match `gain_k2`'s. Benchmark variant.
+        EditSpec {
+            name: "gain_k2_wide",
+            circuit_prefix: "gain_wide",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
+        EditSpec {
+            name: "gain_k2_wide4",
+            circuit_prefix: "gain_wide4",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
+        EditSpec {
+            name: "gain_k2_wide8",
+            circuit_prefix: "gain_wide8",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
+        // Commits to the ORIGINAL stream only; the edited digest is
+        // redundant because the relation is proven in-circuit. state_width 1.
+        EditSpec {
+            // UNSOUND: gain_k2_onehash drops the edited-stream commitment, so a
+            // proof does not bind to the published audio. Benchmark only.
+            name: "gain_k2_onehash",
+            circuit_prefix: "gain_onehash",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 1,
+        },
+        EditSpec {
+            // UNSOUND: gain_k2_sponge4 drops the edited-stream commitment, so a
+            // proof does not bind to the published audio. Benchmark only.
+            name: "gain_k2_sponge4",
+            circuit_prefix: "gain_sponge4",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 1,
+        },
+        EditSpec {
+            // UNSOUND: gain_k2_sponge8 drops the edited-stream commitment, so a
+            // proof does not bind to the published audio. Benchmark only.
+            name: "gain_k2_sponge8",
+            circuit_prefix: "gain_sponge8",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 1,
+        },
+        // SOUND sponge variant: both commitments retained (state_width 2),
+        // only the batch-absorption changes. See gain_step_sponge2h.circom.
+        EditSpec {
+            name: "gain_k2_sponge2h",
+            circuit_prefix: "gain_sponge2h",
+            apply: gain_k2,
+            apply2: None,
+            factor: Some(2),
+            clamps: true,
+            bit_depths: &[8],
+            multi_input: false,
+            state_width: 2,
+        },
         EditSpec {
             name: "gain_k3",
             circuit_prefix: "gain",
@@ -569,6 +659,14 @@ pub fn circuit_name_for(
         // Ablation circuit: gain with the Poseidon commitment chain removed.
         // Measures what the hashing costs; NOT a sound provenance proof.
         ("gain_nohash", Some(k)) => format!("gain_nohash_b{}_k{}_B{}", bit_depth, k, batch_size),
+        // Wide-arity Poseidon tree variant; same relation, different digest.
+        ("gain_wide", Some(k)) => format!("gain_wide_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_onehash", Some(k)) => format!("gain_onehash_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_sponge2h", Some(k)) => format!("gain_sponge2h_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_sponge8", Some(k)) => format!("gain_sponge8_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_sponge4", Some(k)) => format!("gain_sponge4_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_wide8", Some(k)) => format!("gain_wide8_b{}_k{}_B{}", bit_depth, k, batch_size),
+        ("gain_wide4", Some(k)) => format!("gain_wide4_b{}_k{}_B{}", bit_depth, k, batch_size),
         _ => format!("{}_b{}_B{}", prefix, bit_depth, batch_size),
     }
 }
@@ -581,6 +679,13 @@ pub fn circuit_source_dir(prefix: &str) -> &'static str {
     match prefix {
         "gain" => "circuits/edits/gain",
         "gain_nohash" => "circuits/edits/gain",
+        "gain_wide" => "circuits/edits/gain",
+        "gain_onehash" => "circuits/edits/gain",
+        "gain_sponge2h" => "circuits/edits/gain",
+        "gain_sponge8" => "circuits/edits/gain",
+        "gain_sponge4" => "circuits/edits/gain",
+        "gain_wide8" => "circuits/edits/gain",
+        "gain_wide4" => "circuits/edits/gain",
         "atten" => "circuits/edits/attenuation",
         "tremolo" => "circuits/edits/tremolo",
         "dist" => "circuits/edits/distortion",
