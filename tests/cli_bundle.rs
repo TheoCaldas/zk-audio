@@ -1,0 +1,137 @@
+//! The on-disk bundle formats, and the proof-persistence API the CLI's
+//! verify step depends on.
+
+use zk_audio::cli::bundle::{self, ProofBundle, SignatureBundle};
+
+#[test]
+fn signature_bundle_round_trips() {
+    let path = "/tmp/_zk_sig_test.json";
+    let b = SignatureBundle {
+        kind: SignatureBundle::KIND.to_string(),
+        h_orig: "0x1234".to_string(),
+        signature_der_hex: "abcd".to_string(),
+        public_key_pem: "-----BEGIN PUBLIC KEY-----\n-----END PUBLIC KEY-----\n".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        samples: 620,
+        source_file: "x.wav".to_string(),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: SignatureBundle = bundle::read(path).expect("read");
+    assert_eq!(back.kind, SignatureBundle::KIND);
+    assert_eq!(back.h_orig, "0x1234");
+    // bit_depth and batch_size must survive: h_orig is a fold over a
+    // specific partition, so a verifier cannot recompute without them.
+    assert_eq!(back.bit_depth, 8);
+    assert_eq!(back.batch_size, 10);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn proof_bundle_round_trips() {
+    let path = "/tmp/_zk_proof_test.json";
+    let b = ProofBundle {
+        kind: ProofBundle::KIND.to_string(),
+        circuit_name: "gain_b8_k2_B10".to_string(),
+        edit: "gain_k2".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        comp_size: 31,
+        samples: 620,
+        iterations: 2,
+        z0: vec![0, 0],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xbb".to_string(),
+        proof: serde_json::json!({"stub": true}),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: ProofBundle = bundle::read(path).expect("read");
+    // circuit_name is what lets the verifier re-derive a key without being
+    // told which circuit to use.
+    assert_eq!(back.circuit_name, "gain_b8_k2_B10");
+    assert_eq!(back.iterations, 2);
+    assert_eq!(back.z0, vec![0, 0]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn reading_a_malformed_bundle_is_an_error_not_a_panic() {
+    let path = "/tmp/_zk_bad_test.json";
+    std::fs::write(path, "{ not json").unwrap();
+    let r: Result<ProofBundle, _> = bundle::read(path);
+    assert!(r.is_err());
+    let _ = std::fs::remove_file(path);
+}
+
+/// The proof must survive a round trip through disk and verify against a
+/// verifier key derived independently from the circuit - the path option C
+/// takes, where no proving run is available to supply the key.
+#[test]
+fn proof_verifies_against_an_independently_derived_key() {
+    use zk_audio::{
+        audio_parser,
+        bench::config::{circuit_name_for, comp_size_for, find_edit, EditCtx},
+        circuit::{self, CaseMeta, RunConfig},
+    };
+
+    let (bd, b) = (8usize, 10usize);
+    let comp = comp_size_for(bd);
+    let sps = b * comp;
+    let n = sps * 2;
+    let edit = find_edit("gain_k2").expect("edit");
+    let name = circuit_name_for(edit.circuit_prefix, edit.factor, bd, b);
+    let r1cs = format!("artifacts/{name}.r1cs");
+    let wasm = format!("artifacts/{name}_js/{name}.wasm");
+    let fixture = "raw_audios/sweep_31s_2c_44sr_8bd.wav";
+    for p in [r1cs.as_str(), wasm.as_str(), fixture] {
+        if !std::path::Path::new(p).exists() {
+            eprintln!("SKIP: {p} not found");
+            return;
+        }
+    }
+
+    let (samples, _) = audio_parser::read_samples_signed(fixture);
+    let original: Vec<i32> = samples[..n].to_vec();
+    let ctx = EditCtx { bit_depth: bd, batch_size: b, start_index: 0, comp_size: comp, period: 8820 };
+    let edited: Vec<i32> = (edit.apply)(&original, &ctx).iter().map(|&s| s as i32).collect();
+
+    let json = format!("/tmp/_zk_cli_vk_{n}.json");
+    audio_parser::serialize_samples_at(&original, &edited, sps, bd as u32, &json);
+
+    let cfg = RunConfig {
+        circuit_filepath: &r1cs,
+        witness_gen_filepath: &wasm,
+        json_input_filepath: &json,
+        skip_compressed: false,
+        verbose: false,
+        multi_input: false,
+        initial_state: Vec::new(),
+        state_width: edit.state_width,
+    };
+    let meta = CaseMeta {
+        circuit_name: name.clone(),
+        edit: "gain_k2".to_string(),
+        audio_input: fixture.to_string(),
+        bit_depth: bd,
+        batch_size: b,
+        comp_size: comp,
+        total_samples: n,
+        repetition: 0,
+    };
+
+    let (metrics, artifacts) = circuit::run_proof_keep(&cfg, &meta).expect("prove");
+    let artifacts = artifacts.expect("compressed proof kept");
+    let _ = std::fs::remove_file(&json);
+
+    let vk = circuit::derive_vk(&r1cs).expect("derive vk from the circuit alone");
+    let state = circuit::verify_compressed(&artifacts.proof_json, &vk, metrics.iterations, &[0, 0])
+        .expect("verify with the derived key");
+    assert_eq!(state[0], metrics.final_hash_original);
+    assert_eq!(state[1], metrics.final_hash_edited);
+
+    // A corrupted proof must be rejected rather than silently accepted.
+    let mut bad = artifacts.proof_json.clone();
+    let i = bad.len() / 2;
+    bad[i] = if bad[i] == b'1' { b'2' } else { b'1' };
+    assert!(circuit::verify_compressed(&bad, &vk, metrics.iterations, &[0, 0]).is_err());
+}

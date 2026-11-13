@@ -20,6 +20,7 @@ both "this edit is correct" and "the original came from the key holder".
 
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
+- [The CLI](#the-cli)
 - [What `main.rs` does](#what-mainrs-does)
 - [Repository layout](#repository-layout)
 - [Poseidon parity: the Rust and Circom hashes MUST agree](#poseidon-parity-the-rust-and-circom-hashes-must-agree)
@@ -172,6 +173,56 @@ signed by the key holder, and the original was never revealed.
 Exits non-zero if verification fails, so it is usable from a script.
 
 ---
+
+## The CLI
+
+An interactive tool covering the three roles in the protocol:
+
+```bash
+cargo build --release
+./target/release/zk-audio-cli
+```
+
+```
+  A) mock-sign a source
+  B) prove an edit
+  C) verify a bundle
+  exit
+```
+
+**A — mock-sign.** Computes the Poseidon commitment `h_orig` to a source
+stream and signs it. Writes `<stem>.sig.json`.
+
+**B — prove an edit.** Pick an operation from the provable edits, choose bit
+depth and batch size, pick how many folds to prove, and confirm after seeing
+the predicted time. Writes the edited WAV and `<stem>.proof.json` (~24 KB).
+
+**C — verify a bundle.** Takes a signature, a proof and the edited audio,
+then reports each property separately:
+
+```
+bundles agree        OK     same h_orig, bd=8, B=10
+proof                OK     CompressedSNARK verified, 2 folds, 3.1s
+bundle commitments   OK     h_orig and h_edit match the proof's terminal state
+edited audio         OK     recomputed h_edit matches (620 samples)
+signature            OK     valid over h_orig, using the key in the bundle
+```
+
+Alter one byte of the edited audio and `edited audio` fails while `proof`
+still passes — the proof is about the original pair; the commitment is what
+binds it to the published file.
+
+Two things to know:
+
+- **A and B must cover the same number of folds.** `h_orig` is a fold over a
+  specific prefix, so signing the whole file and proving two folds commit to
+  different values. Both steps prompt for the fold count; keep them equal.
+- **C re-derives the verifier key from the circuit**, so `artifacts/` must
+  hold the circuit named in the bundle. That is inherent — the circuit *is*
+  the statement. A verifier key shipped inside a bundle would prove nothing,
+  since a forger supplies both; it is also ~28 MB against a 24 KB proof.
+
+Not yet supported: `concat` and `merge`, which need a second input stream.
 
 ## What `main.rs` does
 

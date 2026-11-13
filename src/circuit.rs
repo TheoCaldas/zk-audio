@@ -9,8 +9,8 @@ use nova_snark::traits::Engine;
 type F<E> = <E as Engine>::Scalar;
 /// Spartan + IPA-PC, the compressing SNARK. Same scheme as before; only
 /// the module path and the trait bound changed.
-type EE<E> = nova_snark::provider::ipa_pc::EvaluationEngine<E>;
-type S<E> = nova_snark::spartan::snark::RelaxedR1CSSNARK<E, EE<E>>;
+pub type EE<E> = nova_snark::provider::ipa_pc::EvaluationEngine<E>;
+pub type S<E> = nova_snark::spartan::snark::RelaxedR1CSSNARK<E, EE<E>>;
 
 use crate::bench::memory::{self, PeakSampler};
 use serde::{Deserialize, Serialize};
@@ -225,7 +225,27 @@ fn ms(d: std::time::Duration) -> f64 {
 
 /// Runs one proof and returns its metrics. Errors are returned rather than
 /// panicking so a sweep can record a failed cell and continue.
+/// The serialized proof and verifier key from a run, for writing to disk.
+///
+/// JSON rather than a compact encoding so a bundle stays inspectable.
+pub struct ProofArtifacts {
+    pub proof_json: Vec<u8>,
+    pub vk_json: Vec<u8>,
+}
+
+/// Runs one proof and returns its metrics, discarding the proof itself.
 pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, ProofError> {
+    run_proof_keep(cfg, meta).map(|(metrics, _)| metrics)
+}
+
+/// Runs one proof and also returns the serialized proof and verifier key.
+///
+/// `None` when `skip_compressed` is set: there is no compressed proof to
+/// keep, only the fold chain.
+pub fn run_proof_keep(
+    cfg: &RunConfig,
+    meta: &CaseMeta,
+) -> Result<(ProofMetrics, Option<ProofArtifacts>), ProofError> {
     type G1 = nova_snark::provider::PallasEngine;
     type G2 = nova_snark::provider::VestaEngine;
 
@@ -441,6 +461,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
     let mut compressed_verify_ms = 0.0;
     let mut proof_size_bytes = 0;
     let mut peak_rss_compressed_prove_bytes = None;
+    let mut artifacts = None;
 
     if !cfg.skip_compressed {
         if cfg.verbose {
@@ -465,7 +486,12 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         compressed_prove_ms = ms(start.elapsed());
         peak_rss_compressed_prove_bytes = sampler.stop();
 
-        proof_size_bytes = serde_json::to_vec(&compressed_snark).map(|v| v.len()).unwrap_or(0);
+        let proof_json = serde_json::to_vec(&compressed_snark)
+            .map_err(|e| ProofError::CompressedProve(e.to_string()))?;
+        proof_size_bytes = proof_json.len();
+        let vk_json =
+            serde_json::to_vec(&vk).map_err(|e| ProofError::CompressedProve(e.to_string()))?;
+        artifacts = Some(ProofArtifacts { proof_json, vk_json });
 
         if cfg.verbose {
             println!("CompressedSNARK::prove took {:.3}s", compressed_prove_ms / 1000.0);
@@ -486,7 +512,7 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         }
     }
 
-    Ok(ProofMetrics {
+    let metrics = ProofMetrics {
         meta: meta.clone(),
         iterations: iteration_count,
         constraints_primary: pp.num_constraints().0,
@@ -516,7 +542,77 @@ pub fn run_proof(cfg: &RunConfig, meta: &CaseMeta) -> Result<ProofMetrics, Proof
         peak_rss_public_params_bytes,
         peak_rss_recursive_prove_bytes,
         peak_rss_compressed_prove_bytes,
-    })
+    };
+
+    Ok((metrics, artifacts))
+}
+
+/// Derives a verifier key from a compiled circuit, for verifying a proof
+/// that arrived without one.
+///
+/// Rebuilding `vk` from the circuit is the point: a `vk` shipped alongside
+/// a proof proves nothing, since a forger supplies both. This is the
+/// expensive part of verification - `verify` itself takes milliseconds.
+pub fn derive_vk(circuit_filepath: &str) -> Result<Vec<u8>, ProofError> {
+    type G1 = nova_snark::provider::PallasEngine;
+    type G2 = nova_snark::provider::VestaEngine;
+
+    if !Path::new(circuit_filepath).exists() {
+        return Err(ProofError::MissingFile(circuit_filepath.to_string()));
+    }
+
+    let root = current_dir().unwrap();
+    let r1cs = load_r1cs::<G1, G2>(&FileLocation::PathBuf(root.join(circuit_filepath)));
+    let pp: PublicParams<G1, G2, CircomCircuit<F<G1>>> = PublicParams::setup(
+        &CircomCircuit { r1cs, witness: None },
+        &*nova_snark::traits::snark::default_ck_hint(),
+        &*nova_snark::traits::snark::default_ck_hint(),
+    )
+    .map_err(|e| ProofError::CompressedSetup(format!("{:?}", e)))?;
+    let (_pk, vk) = CompressedSNARK::<_, _, _, S<G1>, S<G2>>::setup(&pp)
+        .map_err(|e| ProofError::CompressedSetup(format!("{:?}", e)))?;
+
+    serde_json::to_vec(&vk).map_err(|e| ProofError::CompressedSetup(e.to_string()))
+}
+
+/// Verifies a serialized `CompressedSNARK` against a verifier key.
+///
+/// Returns the terminal IVC state as hex strings, so a caller can compare
+/// the proven commitments against ones it recomputed.
+pub fn verify_compressed(
+    proof_json: &[u8],
+    vk_json: &[u8],
+    iterations: usize,
+    z0: &[u64],
+) -> Result<Vec<String>, ProofError> {
+    type G1 = nova_snark::provider::PallasEngine;
+    type G2 = nova_snark::provider::VestaEngine;
+    type Snark = CompressedSNARK<
+        G1,
+        G2,
+        CircomCircuit<<G1 as Engine>::Scalar>,
+        S<G1>,
+        S<G2>,
+    >;
+    type Vk = nova_snark::nova::VerifierKey<
+        G1,
+        G2,
+        CircomCircuit<<G1 as Engine>::Scalar>,
+        S<G1>,
+        S<G2>,
+    >;
+
+    let proof: Snark = serde_json::from_slice(proof_json)
+        .map_err(|e| ProofError::InputRead(format!("proof is not a CompressedSNARK: {e}")))?;
+    let vk: Vk = serde_json::from_slice(vk_json)
+        .map_err(|e| ProofError::InputRead(format!("verifier key is malformed: {e}")))?;
+
+    let z0: Vec<F<G1>> = z0.iter().map(|&v| F::<G1>::from(v)).collect();
+    let out = proof
+        .verify(&vk, iterations, &z0)
+        .map_err(|e| ProofError::CompressedVerify(format!("{:?}", e)))?;
+
+    Ok(out.iter().map(|f| format!("{f:?}")).collect())
 }
 
 /// Single-run entry point kept for the `main.rs` demo. Panics on failure, as

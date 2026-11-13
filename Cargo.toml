@@ -7,6 +7,10 @@ edition = "2024"
 # `cargo run` ambiguous and it errored out.
 default-run = "zk-audio"
 
+[[bin]]
+name = "zk-audio-cli"
+path = "src/bin/cli.rs"
+
 [dependencies]
 nova-snark = "0.76"
 anyhow = "1.0.65"

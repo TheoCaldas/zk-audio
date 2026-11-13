@@ -2,6 +2,7 @@
 //! This library provides tools for parsing audio files, generating cryptographic signatures, and constructing zk-SNARK circuits for audio editing verification.
 
 pub mod circuit;
+pub mod cli;
 pub mod poseidon;
 pub mod protocol;
 pub mod circom_bridge;
