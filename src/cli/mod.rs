@@ -5,10 +5,11 @@
 //! release build matters. See README.md.
 
 pub mod bundle;
+pub mod chain;
 mod prompt;
 mod sign;
 mod prove;
-mod verify;
+pub mod verify;
 
 use std::time::Instant;
 
@@ -88,6 +89,8 @@ pub fn run() {
         println!("  A) mock-sign a source");
         println!("  B) prove an edit");
         println!("  C) verify a bundle");
+        println!("  D) prove a chain of edits");
+        println!("  E) verify a chain bundle");
         println!("  exit");
 
         let choice = match prompt::line("> ") {
@@ -99,6 +102,8 @@ pub fn run() {
             "a" => sign::run(),
             "b" => prove::run(),
             "c" => verify::run(),
+            "d" => chain::prove(),
+            "e" => chain::verify(),
             "exit" | "quit" | "q" => break,
             "" => continue,
             other => {

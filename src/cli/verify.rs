@@ -13,6 +13,14 @@ use crate::signer;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
 
+/// Folding steps an unpadded sample count is committed over.
+///
+/// Ceiling, not floor: a commitment covers the stream padded to a step
+/// boundary, so a ragged N folds over one more step than `N / step`.
+pub fn folds_for(samples: usize, samples_per_step: usize) -> usize {
+    audio_parser::padded_len(samples, samples_per_step) / samples_per_step
+}
+
 /// One checked property, its outcome, and what it cost to check.
 struct Check {
     name: &'static str,
@@ -108,7 +116,7 @@ pub fn run() -> Result<(), String> {
             // is a proof over a prefix of the signed stream, which the
             // current scheme cannot bind to the full commitment.
             let step = proof.batch_size * proof.comp_size;
-            let sig_folds = sig.samples / step;
+            let sig_folds = folds_for(sig.samples, step);
             let proof_folds = proof.iterations;
             if sig_folds != proof_folds {
                 format!(
@@ -119,7 +127,11 @@ pub fn run() -> Result<(), String> {
                 )
             } else {
                 "same partition and step count, but different h_orig: the proof is \
-                 about different audio than the signature."
+                 about different audio than the signature. If the proof's input was \
+                 itself the output of an earlier proof, this is a CHAIN - each stage \
+                 commits to its own input, so only the first stage's h_orig can match \
+                 a signature over the source. Verifying a chain needs every stage's \
+                 proof and the links between them; see docs/edit_chains.md."
                     .to_string()
             }
         },

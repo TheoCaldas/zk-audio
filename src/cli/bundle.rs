@@ -79,6 +79,42 @@ impl ProofBundle {
     pub const KIND: &'static str = "zk-audio-proof/2";
 }
 
+/// Written by the prove-a-chain step: the stages of one chain, in order.
+///
+/// The stage proofs are ordinary `ProofBundle`s, each independently
+/// verifiable, so a chain adds no new proof format. What this carries is
+/// the claim that they compose: the order, and the endpoints the verifier
+/// binds to a signature and to the published audio. The links themselves
+/// are not stored, because they are recomputed from the stages - a
+/// manifest asserting a link the proofs do not show would be the one
+/// thing a verifier must never take on trust.
+#[derive(Serialize, Deserialize)]
+pub struct ChainBundle {
+    pub kind: String,
+    /// Stage proof paths, in application order, relative to this file's
+    /// directory or absolute.
+    pub stages: Vec<String>,
+    /// Edit names in the same order, for display before the stage proofs
+    /// are loaded.
+    pub edits: Vec<String>,
+    /// Commitment to the stream entering stage 0: what a signature covers.
+    pub h_orig: String,
+    /// Commitment to the stream leaving the last stage: what the
+    /// published audio must recompute to.
+    pub h_edit: String,
+    /// True sample count entering stage 0, before padding. Part of the
+    /// signed statement.
+    pub samples: usize,
+    /// True sample count of the published output. Differs from `samples`
+    /// when a terminal stage changes the stream length.
+    pub samples_out: usize,
+    pub source_file: String,
+}
+
+impl ChainBundle {
+    pub const KIND: &'static str = "zk-audio-chain/1";
+}
+
 pub fn write<T: Serialize>(path: &str, value: &T) -> Result<(), String> {
     if let Some(parent) = std::path::Path::new(path).parent() {
         if !parent.as_os_str().is_empty() {

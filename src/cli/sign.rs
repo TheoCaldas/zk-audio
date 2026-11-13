@@ -43,14 +43,24 @@ pub fn run() -> Result<(), String> {
              {bit_depth}-bit"
         );
     }
-    // Commit to the whole stream: the signer does not know what will later
-    // be proven about it. A tail below a step boundary is silence-padded
-    // up to one rather than dropped, and the true length is signed with
-    // the commitment so the padding cannot be reinterpreted.
     if samples.is_empty() {
         return Err(format!("{audio} has no samples"));
     }
-    let n_samples = samples.len();
+    // The whole stream by default: a real signer commits to what it
+    // captured, not knowing what will later be proven about it. A prefix
+    // is offered because the length is part of the signed statement, so a
+    // proof over fewer samples than were signed cannot be bound to the
+    // commitment - and in this mock the same person usually chooses both.
+    // A tail below a step boundary is silence-padded up to one rather
+    // than dropped.
+    let n_samples = loop {
+        let n = prompt::usize_or("how many samples to sign", samples.len()).ok_or("cancelled")?;
+        if n >= 1 && n <= samples.len() {
+            break n;
+        }
+        println!("  enter 1-{}", samples.len());
+    };
+    let samples = &samples[..n_samples];
     let padded_samples = audio_parser::padded_len(n_samples, samples_per_step);
     let folds = padded_samples / samples_per_step;
     if padded_samples > n_samples {

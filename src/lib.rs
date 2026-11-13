@@ -5,6 +5,7 @@ pub mod circuit;
 pub mod cli;
 pub mod poseidon;
 pub mod protocol;
+pub mod chain;
 pub mod circom_bridge;
 pub mod witness;
 pub mod audio_parser;

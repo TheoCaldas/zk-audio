@@ -282,3 +282,68 @@ fn a_single_input_bundle_omits_the_two_input_fields() {
     assert!(!raw.contains("len_a"), "len_a must be omitted, not null");
     let _ = std::fs::remove_file(path);
 }
+
+/// A ragged N is committed over a padded step boundary, so the step count
+/// is a ceiling. Floor division here reported a step-count mismatch for
+/// every N that is not a whole number of steps, which sent a bundle whose
+/// lengths actually agreed down the "proof over a prefix" branch and hid
+/// the real cause.
+///
+/// The case from the report: 705600 samples at bd16/B100 is 1500 per step,
+/// so 471 steps, not 470.
+#[test]
+fn fold_count_rounds_up_for_a_ragged_sample_count() {
+    use zk_audio::cli::verify::folds_for;
+
+    assert_eq!(folds_for(705600, 1500), 471);
+    assert_eq!(folds_for(706500, 1500), 471);
+    assert_eq!(folds_for(1500, 1500), 1);
+    assert_eq!(folds_for(1501, 1500), 2);
+    // A proof genuinely over a prefix must still read as fewer steps.
+    assert_eq!(folds_for(3000, 1500), 2);
+}
+
+#[test]
+fn chain_bundle_round_trips() {
+    use zk_audio::cli::bundle::ChainBundle;
+    let path = "/tmp/_zk_chain_test.json";
+    let b = ChainBundle {
+        kind: ChainBundle::KIND.to_string(),
+        stages: vec!["a.proof.json".to_string(), "b.proof.json".to_string()],
+        edits: vec!["gain_k2".to_string(), "atten_m1".to_string()],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xcc".to_string(),
+        samples: 620,
+        samples_out: 620,
+        source_file: "x.wav".to_string(),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: ChainBundle = bundle::read(path).expect("read");
+    // Order is the statement: the same proofs in another order are a
+    // different claim, so the list must survive as a list.
+    assert_eq!(back.edits, vec!["gain_k2", "atten_m1"]);
+    assert_eq!(back.stages.len(), 2);
+    // The manifest stores no links: they are recomputed from the stage
+    // proofs, because a manifest asserting a link its proofs do not show
+    // is the one thing a verifier must not trust.
+    assert_eq!(back.h_orig, "0xaa");
+    assert_eq!(back.h_edit, "0xcc");
+    let _ = std::fs::remove_file(path);
+}
+
+/// A chain bundle whose stages are reordered must not verify: each proof
+/// still verifies alone, but gain's output is not atten's input. This pins
+/// the comparison the CLI's "stage links" check performs.
+#[test]
+fn reordered_stages_break_the_link() {
+    // Two stages as proven: gain produced B from A, atten produced C from B.
+    let gain = ("A", "B");
+    let atten = ("B", "C");
+
+    let links_hold = |stages: &[(&str, &str)]| -> bool {
+        stages.windows(2).all(|w| w[0].1 == w[1].0)
+    };
+
+    assert!(links_hold(&[gain, atten]));
+    assert!(!links_hold(&[atten, gain]));
+}

@@ -177,7 +177,7 @@ Exits non-zero if verification fails, so it is usable from a script.
 
 ## The CLI
 
-An interactive tool covering the three roles in the protocol:
+An interactive tool covering the roles in the protocol:
 
 ```bash
 cargo build --release
@@ -188,13 +188,18 @@ cargo build --release
   A) mock-sign a source
   B) prove an edit
   C) verify a bundle
+  D) prove a chain of edits
+  E) verify a chain bundle
   exit
 ```
 
-**A — mock-sign.** Computes the Poseidon commitment `h_orig` to a whole
-source stream and signs it. Prompts for bit depth and batch size, because
+**A — mock-sign.** Computes the Poseidon commitment `h_orig` to a source
+stream and signs it. Prompts for bit depth and batch size, because
 `h_orig` is a fold over the partition those fix, and the signature is only
-recomputable by a verifier that knows them. Writes `<stem>.sig.json`.
+recomputable by a verifier that knows them. Also prompts for a sample
+count, defaulting to the whole file: the length is part of the signed
+statement, so signing exactly what will be proven is what makes a short
+proof verifiable. Writes `<stem>.sig.json`.
 
 **B — prove an edit.** Pick an operation from the provable edits, choose bit
 depth and batch size, pick how many samples to prove, and confirm after
@@ -235,12 +240,12 @@ binds it to the published file.
 
 Two things to know:
 
-- **A proof over part of a signed stream does not verify.** A commits to the
-  whole file; B can prove any number of folds. When the two differ, C fails
-  the `bundles agree` check and reports both fold counts. This is a real
-  limitation of the scheme, not of the CLI: binding a prefix proof to a full
-  commitment would need the original's fold carried past the proven window.
-  To get a passing run on a short proof, sign a correspondingly short file.
+- **A proof over part of a signed stream does not verify.** When the signed
+  and proven lengths differ, C fails the `bundles agree` check and reports
+  both fold counts. This is a real limitation of the scheme, not of the CLI:
+  binding a prefix proof to a full commitment would need the original's fold
+  carried past the proven window. Answer A's sample-count prompt with the
+  number you intend to prove.
 - **C re-derives the verifier key from the circuit**, so `artifacts/` must
   hold the circuit named in the bundle. That is inherent — the circuit *is*
   the statement. A verifier key shipped inside a bundle would prove nothing,
@@ -260,6 +265,42 @@ All eleven production edits are offered: the nine single-input ones at 8,
 16 and 24 bits, plus `merge` and `concat` at 8 bits. Not listed: `gain2`,
 the pre-sponge baseline, and the ablation variants, several of which are
 deliberately unsound.
+
+**D — prove a chain of edits.** More than one operation on the same input:
+each stage proves its own edit, and the stages are linked by requiring one
+stage's output commitment to be the next one's input. Bit depth and batch
+size are chosen once for the whole chain, because a commitment is a fold
+over a partition and stages under different partitions could not link.
+Writes one `<stem>.chain.sN_<edit>.proof.json` per stage plus a
+`<stem>.chain.json` manifest naming them in order.
+
+`crop` and `merge` are offered only as the **last** stage and `concat` not
+at all; the prompt refuses the choice rather than discovering it after
+minutes of folding. See [docs/edit_chains.md](docs/edit_chains.md).
+
+**E — verify a chain bundle.** Takes the manifest, a signature over the
+source, and the published audio:
+
+```
+one partition            OK    every stage folds bd=8/B=10
+manifest ends            OK    the bundle's h_orig and h_edit are the first and last stages'
+stage links              OK    1 links hold: each stage consumed what the previous produced
+source bound             OK    the signed source is the chain's input (N=620)
+stage 1 gain_k2          OK    verified, 2 steps, commitments match
+stage 2 atten_m1         OK    verified, 2 steps, commitments match
+published audio          OK    recomputed h_edit matches the last stage (620 samples)
+signature                OK    valid over (h_orig, N=620), using the key in the bundle
+```
+
+`stage links` is the check that makes a chain a chain. Reorder the stages
+and it fails — along with `source bound` and `published audio` — while
+both stage proofs still verify individually, which is exactly the attack
+it exists for: valid proofs about unrelated streams presented as a chain.
+
+The manifest stores **no links**; they are recomputed from the stage
+proofs, since a manifest asserting a link its proofs do not show is the
+one thing a verifier must not trust. Cost is the sum of the stages, one
+verifier key and one proof check each.
 
 ## What `main.rs` does
 
@@ -517,6 +558,21 @@ stream, which severs the binding between the proof and the published
 artefact. Each such circuit says so in its own header. The sound sponge
 variant is `gain_sponge2h`.
 
+### Chaining several edits
+
+`src/chain.rs` composes edits sequentially — one proof per stage, linked
+by requiring stage `k`'s edited-stream commitment to equal stage `k+1`'s
+original-stream commitment. Both are computed in-circuit, so nothing
+off-circuit sits in the seam and `stream_commitment` needs no change.
+
+`gain`, `atten`, `dist` and `tremolo` compose anywhere; `crop` and
+`merge` are allowed only as the last stage, and `concat` is not supported
+as a stage at all. Cost is the sum of the stages plus one
+`CompressedSNARK` per stage, which on short audio is over half the wall
+time — the baseline a fused composite circuit has to beat. See
+[docs/edit_chains.md](docs/edit_chains.md) for the measured figures and
+the reasons for the per-edit restrictions.
+
 ---
 
 ## Benchmarks
@@ -575,13 +631,14 @@ Written analyses live in `docs/analyses/` (gitignored).
 cargo test --release
 ```
 
-`--release` matters: `tests/protocol_end_to_end.rs` runs real
-`RecursiveSNARK` proofs.
+`--release` matters: `tests/protocol_end_to_end.rs` and
+`tests/chain_end_to_end.rs` run real `RecursiveSNARK` proofs.
 
 | suite | what it covers |
 |---|---|
 | `tests/poseidon_parity.rs` | Rust/Circom hash agreement, pinned to circom witnesses |
 | `tests/protocol_end_to_end.rs` | the full protocol over real proofs, plus tamper cases |
+| `tests/chain_end_to_end.rs` | multi-stage chains over real proofs: the seam, broken links, terminal crop/merge |
 | `src/audio_editor.rs` unit tests | each edit against its circuit, exhaustively at 8-bit |
 | `src/signer.rs` unit tests | sign/verify round trips |
 
