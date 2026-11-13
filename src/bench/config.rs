@@ -144,7 +144,7 @@ fn gain2(original: &[i32], _ctx: &EditCtx) -> Vec<i32> {
 /// reference is now the correct mirror rather than a mismatch.
 fn clamped_gain(original: &[i32], bit_depth: usize, k: u32) -> Vec<i32> {
     crate::audio_editor::gain(original, k, bit_depth as u32)
-        .expect("gain factor and sample range validated by the suite")
+        .unwrap_or_else(|e| panic!("gain: {e}. Samples must fit the proving bit depth; the caller is expected to range-check first."))
 }
 
 fn gain_k2(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
@@ -161,7 +161,7 @@ fn gain_k4(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
 /// needed (attenuation shrinks magnitude).
 fn attenuated(original: &[i32], bit_depth: usize, m: u32) -> Vec<i32> {
     crate::audio_editor::attenuate(original, m, bit_depth as u32)
-        .expect("shift and sample range validated by the suite")
+        .unwrap_or_else(|e| panic!("attenuate: {e}. Samples must fit the proving bit depth; the caller is expected to range-check first."))
 }
 
 fn atten_m1(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
@@ -205,7 +205,7 @@ fn concat_streams(a: &[i32], b: &[i32], ctx: &EditCtx) -> Vec<i32> {
 /// (248,400 vs 310,400 at bd=8/B=100).
 fn merge_streams(a: &[i32], b: &[i32], ctx: &EditCtx) -> Vec<i32> {
     crate::audio_editor::merge(a, b, ctx.bit_depth as u32)
-        .expect("stream lengths and ranges validated by the suite")
+        .unwrap_or_else(|e| panic!("merge: {e}. Both streams must be equal length and fit the proving bit depth; the caller is expected to range-check first."))
 }
 
 /// Crop: a verbatim contiguous window. The suite proves a prefix, so the
@@ -220,7 +220,7 @@ fn crop_window(original: &[i32], _ctx: &EditCtx) -> Vec<i32> {
 /// signal. `blend` is the wet amount at scale 2^16.
 fn distorted(original: &[i32], bit_depth: usize, blend: i64) -> Vec<i32> {
     crate::audio_editor::distort(original, blend, bit_depth as u32)
-        .expect("blend and sample range validated by the suite")
+        .unwrap_or_else(|e| panic!("distort: {e}. Samples must fit the proving bit depth; the caller is expected to range-check first."))
 }
 
 fn dist_d100(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
@@ -240,7 +240,7 @@ fn tremolo_f5(original: &[i32], ctx: &EditCtx) -> Vec<i32> {
         ctx.start_index,
         ctx.comp_size,
     )
-    .expect("tremolo parameters and sample range validated by the suite")
+    .unwrap_or_else(|e| panic!("tremolo: {e}. Samples must fit the proving bit depth; the caller is expected to range-check first."))
 }
 
 pub fn registry() -> Vec<EditSpec> {
@@ -260,7 +260,7 @@ pub fn registry() -> Vec<EditSpec> {
             state_width: 2,
         },
         // Generalized family: any integer k > 1, saturating at the limits
-        // of the bit depth, at 8 or 16 bits.
+        // of the bit depth.
         EditSpec {
             name: "gain_k2",
             circuit_prefix: "gain",
@@ -384,7 +384,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(3),
             clamps: true,
-            bit_depths: &[16],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -395,7 +395,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(4),
             clamps: true,
-            bit_depths: &[8, 16],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -409,7 +409,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(1), // m, not k — see circuit_name_for
             clamps: false,
-            bit_depths: &[8, 16],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -420,7 +420,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(2),
             clamps: false,
-            bit_depths: &[8, 16],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -467,7 +467,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: None,
             clamps: false,
-            bit_depths: &[8],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 3,
         },
@@ -480,7 +480,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(100), // wet percent, for the artifact stem
             clamps: true,
-            bit_depths: &[8],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -491,7 +491,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(50),
             clamps: true,
-            bit_depths: &[8],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 2,
         },
@@ -502,7 +502,7 @@ pub fn registry() -> Vec<EditSpec> {
             apply2: None,
             factor: Some(5),
             clamps: false,
-            bit_depths: &[8],
+            bit_depths: &[8, 16, 24],
             multi_input: false,
             state_width: 3,
         },

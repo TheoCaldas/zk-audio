@@ -12,16 +12,21 @@ use crate::poseidon::BatchHashKind;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
 
-/// Edits this step can drive: single-input, and not a benchmark ablation.
+/// Edits this step can drive: the production circuits under
+/// `circuits/edits/<family>/`, single-input only.
 ///
 /// `apply2.is_some()` filters out concat and merge, which need a second
 /// stream; they appear here automatically once supported. The ablation
 /// variants are excluded by name because several are deliberately unsound
-/// and must never be offered as a provenance proof.
+/// and must never be offered as a provenance proof. The `multiplier`
+/// prefix is the pre-sponge baseline kept for benchmark comparison: it
+/// absorbs with the arity-2 chain, not the rate-4 sponge, so offering it
+/// here would hand out commitments under a different construction.
 fn provable_edits() -> Vec<EditSpec> {
     registry()
         .into_iter()
         .filter(|e| e.apply2.is_none())
+        .filter(|e| e.circuit_prefix != "multiplier")
         .filter(|e| {
             !["_nohash", "_wide", "_wide4", "_wide8", "_onehash", "_sponge4", "_sponge8", "_sponge2h"]
                 .iter()
@@ -39,7 +44,6 @@ fn describe(e: &EditSpec) -> String {
         "dist" => format!("rectifier fold at {}% wet", e.factor.unwrap_or(0)),
         "tremolo" => format!("{} Hz amplitude modulation", e.factor.unwrap_or(0)),
         "crop" => "verbatim contiguous window".to_string(),
-        "multiplier" => "2x, NO clamping (legacy baseline)".to_string(),
         other => other.to_string(),
     };
     format!("{:<12} {:<34} depths {:?}", e.name, what, e.bit_depths)
@@ -81,7 +85,7 @@ pub fn run() -> Result<(), String> {
             return Err("circuit not available".to_string());
         }
     }
-    println!("circuit   {circuit_name}");
+    println!("using circuit {circuit_name}");
 
     // The LFO period is a genuine runtime parameter: unlike k/m/d/f it is
     // not compiled in.
@@ -97,10 +101,35 @@ pub fn run() -> Result<(), String> {
     let out_dir = out_dir.trim_end_matches('/').to_string();
 
     let (samples, file_bits) = audio_parser::read_samples_signed(&audio);
+
+    // Every circuit range-checks its samples to the chosen bit depth, so a
+    // source carrying wider samples cannot be proven at all - the witness
+    // is rejected rather than losing precision. Refuse here, where the fix
+    // is still cheap, instead of panicking inside the edit.
+    let (lo, hi) = crate::audio_editor::sample_limits(bit_depth as u32);
+    if let Some((i, bad)) = samples
+        .iter()
+        .enumerate()
+        .find_map(|(i, &v)| (v < lo || v > hi).then_some((i, v)))
+    {
+        let depths = edit.bit_depths;
+        let hint = if depths.contains(&(file_bits as usize)) {
+            format!("rerun and answer {file_bits} at the bit depth prompt")
+        } else {
+            format!(
+                "{} has circuits at {depths:?} only, so this source needs one of those \
+                 depths; convert it or pick another edit",
+                edit.name
+            )
+        };
+        return Err(format!(
+            "{audio} is {file_bits}-bit and cannot be proven at {bit_depth}-bit: sample \
+             {bad} at index {i} is outside {lo}..={hi}. The circuit range-checks every \
+             sample to the proving depth, so this is unprovable, not merely lossy - {hint}."
+        ));
+    }
     if file_bits as usize != bit_depth {
-        println!(
-            "note: {audio} is {file_bits}-bit, proving at {bit_depth}-bit"
-        );
+        println!("note: {audio} is {file_bits}-bit, proving at {bit_depth}-bit");
     }
 
     // crop carries its window start in the IVC state, so z0 is not zero.
@@ -126,12 +155,12 @@ pub fn run() -> Result<(), String> {
              {samples_per_step}"
         ));
     }
+    // A step is the smallest provable unit, so the choice is in steps.
     println!(
-        "{available} samples available from offset {window_start} = {max_folds} folds of \
-         {samples_per_step}"
+        "{available} samples available = up to {max_folds} steps of {samples_per_step} samples"
     );
     let folds = loop {
-        let f = prompt::usize_or("folds to prove", max_folds).ok_or("cancelled")?;
+        let f = prompt::usize_or("how many steps to prove", max_folds).ok_or("cancelled")?;
         if f >= 1 && f <= max_folds {
             break f;
         }
@@ -151,7 +180,7 @@ pub fn run() -> Result<(), String> {
     };
     let t = Timer::start();
     let edited: Vec<i32> = (edit.apply)(&original, &ctx).iter().map(|&s| s as i32).collect();
-    println!("edit applied off-circuit in {}", t.elapsed());
+    let _ = t;
 
     let (rate, channels) = audio_parser::read_rate_and_channels(&audio);
     let edited_path = format!("{out_dir}/{}_{}.wav", stem(&audio), edit.name);
@@ -166,12 +195,12 @@ pub fn run() -> Result<(), String> {
             audio_parser::WaveType::Stereo
         },
     );
-    println!("edited audio -> {edited_path}");
+    println!("edited audio written to {edited_path}");
 
     predict(edit.name, bit_depth, batch_size, usable);
 
     println!();
-    println!("{iterations} folds over {usable} samples at B={batch_size}, bd={bit_depth}.");
+    println!("Ready to prove {usable} samples ({iterations} steps).");
     if !prompt::confirm("start proving?").ok_or("cancelled")? {
         println!("not proving; the edited audio was still written.");
         return Ok(());
@@ -191,7 +220,8 @@ pub fn run() -> Result<(), String> {
         witness_gen_filepath: &wasm,
         json_input_filepath: &json_input,
         skip_compressed: false,
-        verbose: true,
+        verbose: false,
+        progress: true,
         multi_input: edit.multi_input,
         initial_state: initial_state.clone(),
         state_width: edit.state_width,
@@ -253,13 +283,11 @@ pub fn run() -> Result<(), String> {
     )?;
 
     println!();
-    println!("proving took {total}");
-    println!("  fold chain   {:.1}s", metrics.recursive_prove_ms / 1000.0);
-    println!("  compression  {:.1}s", metrics.compressed_prove_ms / 1000.0);
-    println!("constraints/step {}", metrics.constraints_primary);
-    println!("h_orig    {}", metrics.final_hash_original);
-    println!("h_edit    {}", metrics.final_hash_edited);
-    println!("proof     {proof_path} ({} KB)", artifacts.proof_json.len() / 1024);
+    println!("proved in {total}");
+    println!("proof written to {proof_path} ({} KB)", artifacts.proof_json.len() / 1024);
+    println!();
+    println!("Send the edited audio and the proof, with the signature from");
+    println!("option A, to whoever verifies (option C).");
     Ok(())
 }
 
@@ -289,7 +317,7 @@ fn predict(edit: &str, bit_depth: usize, batch_size: usize, samples: usize) {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             for l in text.lines().filter(|l| l.contains("PROVE TIME") || l.contains("ms per fold")) {
-                println!("predicted: {}", l.trim());
+                println!("estimate: {}", l.trim());
             }
         }
         _ => println!("(no time estimate available)"),

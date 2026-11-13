@@ -1,9 +1,8 @@
 //! Interactive CLI for the three roles in the protocol: mock-sign a source,
 //! prove an edit, verify a bundle.
 //!
-//!     cargo run --release --bin zk-audio-cli
-//!
-//! Proving is slow, so a release build matters. See README.md.
+//! Run with `cargo run --release --bin zk-audio-cli`. Proving is slow, so a
+//! release build matters. See README.md.
 
 pub mod bundle;
 mod prompt;
@@ -27,14 +26,22 @@ impl Timer {
 
     /// Elapsed time, formatted for a log line.
     pub fn elapsed(&self) -> String {
-        let s = self.0.elapsed().as_secs_f64();
-        if s < 1.0 {
-            format!("{:.0}ms", s * 1000.0)
-        } else if s < 90.0 {
-            format!("{s:.1}s")
-        } else {
-            format!("{:.0}m{:02.0}s", s / 60.0, s % 60.0)
-        }
+        fmt_secs(self.secs())
+    }
+
+    pub fn secs(&self) -> f64 {
+        self.0.elapsed().as_secs_f64()
+    }
+}
+
+/// A duration formatted for a log line: "84ms", "3.2s", "2m05s".
+pub fn fmt_secs(s: f64) -> String {
+    if s < 1.0 {
+        format!("{:.0}ms", s * 1000.0)
+    } else if s < 90.0 {
+        format!("{s:.1}s")
+    } else {
+        format!("{:.0}m{:02.0}s", s / 60.0, s % 60.0)
     }
 }
 

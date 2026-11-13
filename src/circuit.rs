@@ -192,13 +192,35 @@ impl fmt::Display for ProofError {
 
 impl std::error::Error for ProofError {}
 
+/// How often the folding progress line is redrawn. Folds are uniform, so
+/// a slow refresh still gives an accurate ETA.
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Compact duration for progress lines: "45s", "3m12s", "1h04m".
+fn fmt_secs(secs: f64) -> String {
+    let t = secs.max(0.0).round() as u64;
+    if t < 60 {
+        format!("{t}s")
+    } else if t < 3600 {
+        format!("{}m{:02}s", t / 60, t % 60)
+    } else {
+        format!("{}h{:02}m", t / 3600, (t % 3600) / 60)
+    }
+}
+
 pub struct RunConfig<'a> {
     pub circuit_filepath: &'a str,
     pub witness_gen_filepath: &'a str,
     pub json_input_filepath: &'a str,
     /// Skip the CompressedSNARK phase (setup/prove/verify) for fast sweeps.
     pub skip_compressed: bool,
+    /// Print the full instrumentation: circuit sizes, per-phase timings,
+    /// peak RSS, terminal hashes. For benchmarking, not for end users.
     pub verbose: bool,
+    /// Print a single rewriting progress line during folding, and one
+    /// line per phase. Independent of `verbose`, which is the detailed
+    /// dump.
+    pub progress: bool,
     /// True when the third IVC state element is a second stream's hash
     /// rather than a sample counter, so the metrics record it correctly.
     pub multi_input: bool,
@@ -394,6 +416,9 @@ pub fn run_proof_keep(
         );
         println!("Creating a RecursiveSNARK...");
     }
+    if cfg.progress && !cfg.verbose {
+        println!("  proving {} steps", iteration_count);
+    }
 
     // The folding loop is where the peak almost always lands, and it is
     // entirely inside this one call - including the wasm witness generator
@@ -403,12 +428,48 @@ pub fn run_proof_keep(
     // nova-scotia is pinned to nova-snark 0.23 and cannot build against
     // 0.76, so the node-subprocess path is gone; witnesses are always
     // computed in-process now.
-    let recursive_snark = crate::witness::create_recursive_circuit_inproc::<G1, G2>(
+    let fold_start = Instant::now();
+    let show_progress = cfg.progress;
+    // Print at most once every PROGRESS_INTERVAL, plus the final step.
+    // A flushed write per fold is a syscall the fold loop does not need.
+    let mut last_print = Instant::now();
+    let recursive_snark = crate::witness::create_recursive_circuit_inproc_with_progress::<G1, G2>(
         &witness_generator_file,
         r1cs,
         private_inputs,
         start_public_input.clone(),
         &pp,
+        |done, total| {
+            if !show_progress {
+                return;
+            }
+            // Always draw the first step, so a run shows signs of life
+            // before the first interval elapses.
+            let final_step = done == total;
+            if done > 1 && !final_step && last_print.elapsed() < PROGRESS_INTERVAL {
+                return;
+            }
+            last_print = Instant::now();
+            // Rewrite one line rather than scrolling. An ETA from the
+            // mean fold time is steady enough to be useful, since every
+            // fold costs the same.
+            let elapsed = fold_start.elapsed().as_secs_f64();
+            let eta = if done > 0 {
+                elapsed / done as f64 * (total - done) as f64
+            } else {
+                0.0
+            };
+            print!(
+                "\r  step {done}/{total} ({:.0}%)   elapsed {}   remaining {}   ",
+                done as f64 / total as f64 * 100.0,
+                fmt_secs(elapsed),
+                fmt_secs(eta),
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            if final_step {
+                println!();
+            }
+        },
     )
     .map_err(ProofError::Prove)?;
     let recursive_prove_ms = ms(start.elapsed());
@@ -467,6 +528,12 @@ pub fn run_proof_keep(
         if cfg.verbose {
             println!("Generating a CompressedSNARK using Spartan with IPA-PC...");
         }
+        if cfg.progress && !cfg.verbose {
+            // No incremental signal to report here: compression is one
+            // opaque call, unlike folding.
+            print!("  compressing proof... ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
 
         // Sampled across setup AND prove: `setup` materializes the prover
         // key, which stays resident through `prove`, so splitting the two
@@ -493,6 +560,9 @@ pub fn run_proof_keep(
             serde_json::to_vec(&vk).map_err(|e| ProofError::CompressedProve(e.to_string()))?;
         artifacts = Some(ProofArtifacts { proof_json, vk_json });
 
+        if cfg.progress && !cfg.verbose {
+            println!("done in {}", fmt_secs(compressed_prove_ms / 1000.0));
+        }
         if cfg.verbose {
             println!("CompressedSNARK::prove took {:.3}s", compressed_prove_ms / 1000.0);
             println!("Verifying a CompressedSNARK...");
@@ -643,6 +713,7 @@ pub fn run_test(circuit_filepath: &str, witness_gen_filepath: &str, json_input_f
         json_input_filepath,
         skip_compressed: false,
         verbose: true,
+        progress: false,
         multi_input: false,
         initial_state: Vec::new(),
         // The demo wrapper only drives memoryless edits; a time-varying

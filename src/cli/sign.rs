@@ -42,29 +42,27 @@ pub fn run() -> Result<(), String> {
              {bit_depth}-bit"
         );
     }
-    // The commitment covers exactly the samples folded, so this must match
-    // what the proving step will cover - otherwise the two commit to
-    // different prefixes of the same file and can never agree.
-    let max_folds = samples.len() / samples_per_step;
-    if max_folds == 0 {
+    // Commit to the whole stream: the signer does not know what will later
+    // be proven about it. `stream_commitment` folds whole steps only, so
+    // the tail below a step boundary is dropped.
+    let folds = samples.len() / samples_per_step;
+    if folds == 0 {
         return Err(format!(
             "{} samples is less than one step of {samples_per_step}",
             samples.len()
         ));
     }
-    println!(
-        "{} samples = {max_folds} folds of {samples_per_step}",
-        samples.len()
-    );
-    let folds = loop {
-        let f = prompt::usize_or("folds to commit (must equal what you will prove)", max_folds)
-            .ok_or("cancelled")?;
-        if f >= 1 && f <= max_folds {
-            break f;
-        }
-        println!("  enter 1-{max_folds}");
-    };
     let usable = folds * samples_per_step;
+    if usable < samples.len() {
+        println!(
+            "{} samples: committing to {folds} steps of {samples_per_step} ({} dropped below \
+             the last step boundary)",
+            samples.len(),
+            samples.len() - usable
+        );
+    } else {
+        println!("{} samples = {folds} steps of {samples_per_step}", samples.len());
+    }
     let samples = &samples[..usable];
 
     let t = Timer::start();

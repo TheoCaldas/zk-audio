@@ -226,6 +226,7 @@ pub fn run_suite(cfg: &SuiteConfig) -> Result<(), String> {
                 json_input_filepath: &c.input_path,
                 skip_compressed: cfg.skip_compressed,
                 verbose: false,
+                progress: false,
                 multi_input: edit.multi_input,
                 // Concat carries its split point in the state; a zero
                 // there would silently prove the wrong relation.

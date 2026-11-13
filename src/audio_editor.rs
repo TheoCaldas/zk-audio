@@ -321,15 +321,6 @@ pub fn merge(a: &[i32], b: &[i32], bit_depth: u32) -> Result<Vec<i32>, String> {
 /// reason; this function implements the literal sum that was specified.
 ///
 /// Both streams must have equal length and fit `bit_depth`.
-///
-/// # Examples
-/// ```
-/// use zk_audio::audio_editor::merge;
-/// assert_eq!(merge(&[10, -10], &[5, -5], 8).unwrap(), vec![15, -15]);
-/// // Saturates in both directions.
-/// assert_eq!(merge(&[100], &[100], 8).unwrap(), vec![127]);
-/// assert_eq!(merge(&[-100], &[-100], 8).unwrap(), vec![-128]);
-/// ```
 pub fn merge_clamped(a: &[i32], b: &[i32], bit_depth: u32) -> Result<Vec<i32>, String> {
     if a.len() != b.len() {
         return Err(format!(

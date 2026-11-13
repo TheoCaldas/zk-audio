@@ -119,6 +119,7 @@ fn config<'a>(case: &'a Case, r1cs: &'a str, wasm: &'a str) -> (RunConfig<'a>, C
         // they check, since the recursive chain is still fully verified.
         skip_compressed: true,
         verbose: false,
+        progress: false,
         multi_input: edit.multi_input,
         initial_state: Vec::new(),
         state_width: edit.state_width,
@@ -430,6 +431,7 @@ fn legacy_chain_hashed_circuit_also_matches() {
         json_input_filepath: &json_path,
         skip_compressed: true,
         verbose: false,
+        progress: false,
         multi_input: edit.multi_input,
         initial_state: Vec::new(),
         state_width: edit.state_width,

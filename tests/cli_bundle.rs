@@ -104,6 +104,7 @@ fn proof_verifies_against_an_independently_derived_key() {
         json_input_filepath: &json,
         skip_compressed: false,
         verbose: false,
+        progress: false,
         multi_input: false,
         initial_state: Vec::new(),
         state_width: edit.state_width,

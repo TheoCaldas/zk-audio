@@ -111,6 +111,7 @@ fn main() {
         json_input_filepath,
         skip_compressed: false,
         verbose: true,
+        progress: false,
         multi_input: edit.multi_input,
         initial_state: Vec::new(),
         state_width: edit.state_width,

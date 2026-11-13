@@ -190,8 +190,10 @@ cargo build --release
   exit
 ```
 
-**A — mock-sign.** Computes the Poseidon commitment `h_orig` to a source
-stream and signs it. Writes `<stem>.sig.json`.
+**A — mock-sign.** Computes the Poseidon commitment `h_orig` to a whole
+source stream and signs it. Prompts for bit depth and batch size, because
+`h_orig` is a fold over the partition those fix, and the signature is only
+recomputable by a verifier that knows them. Writes `<stem>.sig.json`.
 
 **B — prove an edit.** Pick an operation from the provable edits, choose bit
 depth and batch size, pick how many folds to prove, and confirm after seeing
@@ -201,12 +203,19 @@ the predicted time. Writes the edited WAV and `<stem>.proof.json` (~24 KB).
 then reports each property separately:
 
 ```
-bundles agree        OK     same h_orig, bd=8, B=10
-proof                OK     CompressedSNARK verified, 2 folds, 3.1s
-bundle commitments   OK     h_orig and h_edit match the proof's terminal state
-edited audio         OK     recomputed h_edit matches (620 samples)
-signature            OK     valid over h_orig, using the key in the bundle
+bundles agree        OK        1ms   same h_orig, bd=8, B=10
+proof                OK       3.6s   verified, 3 steps
+bundle commitments   OK        0ms   h_orig and h_edit match the proof's terminal state
+edited audio         OK        4ms   recomputed h_edit matches (930 samples)
+signature            OK        0ms   valid over h_orig, using the key in the bundle
+verifier key                  2.7s   derived from the circuit
+total                         6.3s
 ```
+
+Every step is timed. Nearly all of the wall clock is the proof check plus
+deriving the verifier key, which scales with circuit size; recomputing the
+commitment stays in the low hundreds of milliseconds even over 150,000
+samples.
 
 Alter one byte of the edited audio and `edited audio` fails while `proof`
 still passes — the proof is about the original pair; the commitment is what
@@ -214,15 +223,20 @@ binds it to the published file.
 
 Two things to know:
 
-- **A and B must cover the same number of folds.** `h_orig` is a fold over a
-  specific prefix, so signing the whole file and proving two folds commit to
-  different values. Both steps prompt for the fold count; keep them equal.
+- **A proof over part of a signed stream does not verify.** A commits to the
+  whole file; B can prove any number of folds. When the two differ, C fails
+  the `bundles agree` check and reports both fold counts. This is a real
+  limitation of the scheme, not of the CLI: binding a prefix proof to a full
+  commitment would need the original's fold carried past the proven window.
+  To get a passing run on a short proof, sign a correspondingly short file.
 - **C re-derives the verifier key from the circuit**, so `artifacts/` must
   hold the circuit named in the bundle. That is inherent — the circuit *is*
   the statement. A verifier key shipped inside a bundle would prove nothing,
   since a forger supplies both; it is also ~28 MB against a 24 KB proof.
 
-Not yet supported: `concat` and `merge`, which need a second input stream.
+The nine production edits are offered at 8, 16 and 24 bits, all at
+`B=100`. Not listed: `concat` and `merge`, which need a second input
+stream, and `gain2`, the pre-sponge baseline.
 
 ## What `main.rs` does
 
@@ -449,15 +463,25 @@ circuit in `circuits/edits/<family>/`, and a registry entry in
 truncates, and the Rust reference must mirror the circuit exactly** —
 several tests check this exhaustively at 8-bit.
 
-| edit | relation | depths |
+The nine production edits are compiled at every depth for `B=100`, which
+is the matrix the CLI offers; other batch sizes exist only where a
+benchmark needed them.
+
+| edit | relation | depths (at B=100) |
 |---|---|---|
-| `gain2` | `x * 2`, **no clamping** (the original baseline) | 16 |
 | `gain_k2`, `gain_k3`, `gain_k4` | `clamp(k * x)`, saturating | 8, 16, 24 |
-| `atten_m1`, `atten_m2` | `x >> m`, i.e. `k = 1/2^m` | 8, 16 |
-| `dist_d50`, `dist_d100` | rectifying distortion at a wet blend | 8 |
-| `tremolo_f5` | LFO amplitude modulation (table-driven) | 8 |
-| `crop` | a window, with a proven sample counter | 8 |
+| `atten_m1`, `atten_m2` | `x >> m`, i.e. `k = 1/2^m` | 8, 16, 24 |
+| `dist_d50`, `dist_d100` | rectifying distortion at a wet blend | 8, 16, 24 |
+| `tremolo_f5` | LFO amplitude modulation (table-driven) | 8, 16, 24 |
+| `crop` | a window, with a proven sample counter | 8, 16, 24 |
 | `concat`, `merge` | two input streams | 8 |
+| `gain2` | `x * 2`, **no clamping** (the pre-sponge baseline) | 16 |
+
+`gain2` is kept for benchmark comparison and is **not offered by the
+CLI**: it absorbs with the arity-2 chain rather than the rate-4 sponge
+(see [Poseidon parity](#poseidon-parity)), so its commitments are not
+interchangeable with the production circuits'. `concat` and `merge` need a
+second input stream and are not in the CLI either.
 
 The `gain_k2_{nohash,wide,wide4,wide8,onehash,sponge4,sponge8,sponge2h}`
 entries are **hashing ablations for the optimisation study**, not usable
@@ -540,9 +564,6 @@ artefacts or fixtures are missing, so a fresh clone stays green without
 passing silently — which also means a green run proves nothing until
 `./setup.sh` has built `gain_b8_k2_B10` and the 8-bit fixture. Check for
 `SKIP:` in the output if in doubt.
-
-Known failure: the `audio_editor::merge_clamped` doctest fails. It is
-pre-existing and unrelated to the protocol work.
 
 ---
 

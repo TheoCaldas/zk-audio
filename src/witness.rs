@@ -300,6 +300,41 @@ where
     E1: nova_snark::traits::Engine<Base = <E2 as nova_snark::traits::Engine>::Scalar>,
     E2: nova_snark::traits::Engine<Base = <E1 as nova_snark::traits::Engine>::Scalar>,
 {
+    create_recursive_circuit_inproc_with_progress::<E1, E2>(
+        wasm_path,
+        r1cs,
+        private_inputs,
+        start_public_input,
+        pp,
+        |_, _| {},
+    )
+}
+
+/// As above, calling `progress(done, total)` after each fold so a caller
+/// can report how far along a long run is.
+pub fn create_recursive_circuit_inproc_with_progress<E1, E2>(
+    wasm_path: &Path,
+    r1cs: crate::circom_bridge::circuit::R1CS<<E1 as nova_snark::traits::Engine>::Scalar>,
+    private_inputs: Vec<HashMap<String, Value>>,
+    start_public_input: Vec<<E1 as nova_snark::traits::Engine>::Scalar>,
+    pp: &nova_snark::nova::PublicParams<
+        E1,
+        E2,
+        crate::circom_bridge::circuit::CircomCircuit<<E1 as nova_snark::traits::Engine>::Scalar>,
+    >,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<
+    nova_snark::nova::RecursiveSNARK<
+        E1,
+        E2,
+        crate::circom_bridge::circuit::CircomCircuit<<E1 as nova_snark::traits::Engine>::Scalar>,
+    >,
+    String,
+>
+where
+    E1: nova_snark::traits::Engine<Base = <E2 as nova_snark::traits::Engine>::Scalar>,
+    E2: nova_snark::traits::Engine<Base = <E1 as nova_snark::traits::Engine>::Scalar>,
+{
     use crate::circom_bridge::circuit::CircomCircuit;
 
     let mut wc = WitnessCalculator::new(wasm_path)?;
@@ -324,6 +359,7 @@ where
         recursive_snark
             .prove_step(pp, &circuit)
             .map_err(|e| format!("prove_step {}: {:?}", i, e))?;
+        progress(i + 1, iteration_count);
     }
     Ok(recursive_snark)
 }
