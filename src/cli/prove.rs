@@ -13,19 +13,17 @@ use crate::poseidon::BatchHashKind;
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
 
 /// Edits this step can drive: the production circuits under
-/// `circuits/edits/<family>/`, single-input only.
+/// `circuits/edits/<family>/`.
 ///
-/// `apply2.is_some()` filters out concat and merge, which need a second
-/// stream; they appear here automatically once supported. The ablation
-/// variants are excluded by name because several are deliberately unsound
-/// and must never be offered as a provenance proof. The `multiplier`
-/// prefix is the pre-sponge baseline kept for benchmark comparison: it
-/// absorbs with the arity-2 chain, not the rate-4 sponge, so offering it
-/// here would hand out commitments under a different construction.
+/// The ablation variants are excluded by name because several are
+/// deliberately unsound and must never be offered as a provenance proof.
+/// The `multiplier` prefix is the pre-sponge baseline kept for benchmark
+/// comparison: it absorbs with the arity-2 chain, not the rate-4 sponge,
+/// so offering it here would hand out commitments under a different
+/// construction.
 fn provable_edits() -> Vec<EditSpec> {
     registry()
         .into_iter()
-        .filter(|e| e.apply2.is_none())
         .filter(|e| e.circuit_prefix != "multiplier")
         .filter(|e| {
             !["_nohash", "_wide", "_wide4", "_wide8", "_onehash", "_sponge4", "_sponge8", "_sponge2h"]
@@ -44,6 +42,8 @@ fn describe(e: &EditSpec) -> String {
         "dist" => format!("rectifier fold at {}% wet", e.factor.unwrap_or(0)),
         "tremolo" => format!("{} Hz amplitude modulation", e.factor.unwrap_or(0)),
         "crop" => "verbatim contiguous window".to_string(),
+        "merge" => "floor((a+b)/2), mix two sources".to_string(),
+        "concat" => "a then b, join two sources".to_string(),
         other => other.to_string(),
     };
     format!("{:<12} {:<34} depths {:?}", e.name, what, e.bit_depths)
@@ -96,7 +96,18 @@ pub fn run() -> Result<(), String> {
         8820
     };
 
-    let audio = prompt::existing_path("audio source path: ").ok_or("cancelled")?;
+    // A two-input relation needs both sources up front; the prompt says
+    // which is which, because neither merge's commitment pair nor
+    // concat's ordering is symmetric in the bundle.
+    let two_input = edit.apply2.is_some();
+    let audio = match two_input {
+        true => prompt::existing_path("source A path: ").ok_or("cancelled")?,
+        false => prompt::existing_path("audio source path: ").ok_or("cancelled")?,
+    };
+    let audio_b = match two_input {
+        true => Some(prompt::existing_path("source B path: ").ok_or("cancelled")?),
+        false => None,
+    };
     let out_dir = prompt::text_or("output directory", ".").ok_or("cancelled")?;
     let out_dir = out_dir.trim_end_matches('/').to_string();
 
@@ -107,14 +118,17 @@ pub fn run() -> Result<(), String> {
     // is rejected rather than losing precision. Refuse here, where the fix
     // is still cheap, instead of panicking inside the edit.
     let (lo, hi) = crate::audio_editor::sample_limits(bit_depth as u32);
-    if let Some((i, bad)) = samples
-        .iter()
-        .enumerate()
-        .find_map(|(i, &v)| (v < lo || v > hi).then_some((i, v)))
-    {
+    let range_check = |path: &str, s: &[i32], bits: u32| -> Result<(), String> {
+        let Some((i, bad)) = s
+            .iter()
+            .enumerate()
+            .find_map(|(i, &v)| (v < lo || v > hi).then_some((i, v)))
+        else {
+            return Ok(());
+        };
         let depths = edit.bit_depths;
-        let hint = if depths.contains(&(file_bits as usize)) {
-            format!("rerun and answer {file_bits} at the bit depth prompt")
+        let hint = if depths.contains(&(bits as usize)) {
+            format!("rerun and answer {bits} at the bit depth prompt")
         } else {
             format!(
                 "{} has circuits at {depths:?} only, so this source needs one of those \
@@ -122,15 +136,30 @@ pub fn run() -> Result<(), String> {
                 edit.name
             )
         };
-        return Err(format!(
-            "{audio} is {file_bits}-bit and cannot be proven at {bit_depth}-bit: sample \
+        Err(format!(
+            "{path} is {bits}-bit and cannot be proven at {bit_depth}-bit: sample \
              {bad} at index {i} is outside {lo}..={hi}. The circuit range-checks every \
              sample to the proving depth, so this is unprovable, not merely lossy - {hint}."
-        ));
-    }
+        ))
+    };
+    range_check(&audio, &samples, file_bits)?;
     if file_bits as usize != bit_depth {
         println!("note: {audio} is {file_bits}-bit, proving at {bit_depth}-bit");
     }
+
+    // Stream B is proven under the same circuit, so it gets the same
+    // range check rather than failing later inside the witness generator.
+    let samples_b = match &audio_b {
+        Some(path) => {
+            let (b, b_bits) = audio_parser::read_samples_signed(path);
+            range_check(path, &b, b_bits)?;
+            if b_bits as usize != bit_depth {
+                println!("note: {path} is {b_bits}-bit, proving at {bit_depth}-bit");
+            }
+            Some(b)
+        }
+        None => None,
+    };
 
     // crop carries its window start in the IVC state, so z0 is not zero.
     let (window_start, initial_state) = if edit.circuit_prefix == "crop" {
@@ -148,7 +177,12 @@ pub fn run() -> Result<(), String> {
     // Offer a cap: the whole file is often far more proving than wanted.
     // The choice is in samples; a tail below a step boundary is padded up
     // to one rather than refused.
-    let available = samples.len().saturating_sub(window_start);
+    // A two-input relation folds both streams in lockstep, so the usable
+    // length is whichever source runs out first.
+    let available = match &samples_b {
+        Some(b) => samples.len().min(b.len()).saturating_sub(window_start),
+        None => samples.len().saturating_sub(window_start),
+    };
     if available == 0 {
         return Err(format!("no samples at or after offset {window_start}"));
     }
@@ -180,6 +214,14 @@ pub fn run() -> Result<(), String> {
         );
     }
 
+    // Stream B is padded to the same boundary, so both chains fold the
+    // same number of steps.
+    let original_b: Option<Vec<i32>> = samples_b.as_ref().map(|b| {
+        let mut v: Vec<i32> = b[window_start..window_start + n_samples].to_vec();
+        v.resize(padded_samples, 0);
+        v
+    });
+
     let ctx = EditCtx {
         bit_depth,
         batch_size,
@@ -188,8 +230,33 @@ pub fn run() -> Result<(), String> {
         period,
     };
     let t = Timer::start();
-    let edited: Vec<i32> = (edit.apply)(&original, &ctx).iter().map(|&s| s as i32).collect();
+    let edited: Vec<i32> = match (&original_b, edit.apply2) {
+        (Some(b), Some(f)) => f(&original, b, &ctx),
+        _ => (edit.apply)(&original, &ctx),
+    }
+    .iter()
+    .map(|&s| s as i32)
+    .collect();
     let _ = t;
+
+    // Concat's boundary is carried in the IVC state, and the circuit
+    // constrains it to a whole number of folds. `concat_streams` splits at
+    // the fold-aligned midpoint of what it is handed, so the CLI must
+    // declare the same point or the proof would attest a different join.
+    let concat_len_a = match edit.circuit_prefix == "concat" {
+        true => Some(((padded_samples / 2) / samples_per_step) * samples_per_step),
+        false => None,
+    };
+    let initial_state = match concat_len_a {
+        Some(len_a) => vec![(4usize, len_a as u64)],
+        None => initial_state,
+    };
+    if let Some(len_a) = concat_len_a {
+        println!(
+            "join at {len_a} samples: A contributes [0, {len_a}), B contributes \
+             [{len_a}, {padded_samples})"
+        );
+    }
 
     let (rate, channels) = audio_parser::read_rate_and_channels(&audio);
     let edited_path = format!("{out_dir}/{}_{}.wav", stem(&audio), edit.name);
@@ -218,13 +285,25 @@ pub fn run() -> Result<(), String> {
     }
 
     let json_input = format!("serialized/{circuit_name}_N{usable}.json");
-    audio_parser::serialize_samples_at(
-        &original,
-        &edited,
-        samples_per_step,
-        bit_depth as u32,
-        &json_input,
-    );
+    match &original_b {
+        // A two-input circuit reads stream B from `stream_b`; the
+        // single-input serializer has no slot for it.
+        Some(b) => audio_parser::serialize_merge_at(
+            &original,
+            b,
+            &edited,
+            samples_per_step,
+            bit_depth as u32,
+            &json_input,
+        ),
+        None => audio_parser::serialize_samples_at(
+            &original,
+            &edited,
+            samples_per_step,
+            bit_depth as u32,
+            &json_input,
+        ),
+    }
 
     let cfg = RunConfig {
         circuit_filepath: &r1cs,
@@ -254,20 +333,50 @@ pub fn run() -> Result<(), String> {
     let total = t.elapsed();
     let artifacts = artifacts.ok_or("no compressed proof was produced")?;
 
-    // Cross-check the Rust commitment against the circuit's before writing
-    // a bundle: a mismatch here is a bug, not a forgery.
-    let h_orig = audio_parser::hex_stream_commitment::<Fq>(
-        &original,
-        bit_depth as u32,
-        samples_per_step,
-        BatchHashKind::for_circuit(&circuit_name),
-    );
+    // Cross-check the Rust commitments against the circuit's before
+    // writing a bundle: a mismatch here is a bug, not a forgery.
+    //
+    // Concat gates its source chains, so neither covers the whole padded
+    // stream: A absorbs only below the join and B only from it on. The
+    // recomputation has to fold the same spans the circuit did.
+    let kind = BatchHashKind::for_circuit(&circuit_name);
+    let commit = |s: &[i32]| {
+        audio_parser::hex_stream_commitment::<Fq>(s, bit_depth as u32, samples_per_step, kind)
+    };
+    let (span_a, span_b) = match concat_len_a {
+        Some(len_a) => (&original[..len_a], original_b.as_deref().map(|b| &b[len_a..])),
+        None => (&original[..], original_b.as_deref()),
+    };
+
+    let h_orig = commit(span_a);
     if h_orig != metrics.final_hash_original {
         return Err(format!(
-            "commitment mismatch: circuit {} vs recomputed {}",
+            "commitment mismatch on stream A: circuit {} vs recomputed {}",
             metrics.final_hash_original, h_orig
         ));
     }
+    let h_b = match (span_b, metrics.final_hash_b.as_deref()) {
+        (Some(b), Some(circuit_b)) => {
+            let recomputed = commit(b);
+            if recomputed != circuit_b {
+                return Err(format!(
+                    "commitment mismatch on stream B: circuit {circuit_b} vs recomputed \
+                     {recomputed}"
+                ));
+            }
+            Some(recomputed)
+        }
+        // A two-input proof whose circuit reported no third state element
+        // would leave stream B uncommitted, so the bundle would claim more
+        // than the proof shows.
+        (Some(_), None) => {
+            return Err(format!(
+                "{} folds two streams but the proof carries no stream-B commitment",
+                edit.name
+            ))
+        }
+        _ => None,
+    };
 
     let mut z0 = vec![0u64; edit.state_width];
     for (i, v) in &initial_state {
@@ -290,6 +399,8 @@ pub fn run() -> Result<(), String> {
             z0,
             h_orig: metrics.final_hash_original.clone(),
             h_edit: metrics.final_hash_edited.clone(),
+            h_b,
+            len_a: concat_len_a,
             proof: serde_json::from_slice(&artifacts.proof_json).map_err(|e| e.to_string())?,
         },
     )?;

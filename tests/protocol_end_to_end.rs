@@ -1076,3 +1076,189 @@ fn multi_input_families_fold_a_ragged_length() {
     assert!(checked > 0, "no multi-input family was compiled");
     eprintln!("ragged N verified against {checked} multi-input families");
 }
+
+/// The spans the CLI recomputes for a concat proof must be the spans the
+/// circuit folded.
+///
+/// Concat gates its source chains on the join: A absorbs only below
+/// `len_a` and B only from it on, so committing to either whole padded
+/// stream gives the wrong value. This pins the span arithmetic
+/// `src/cli/prove.rs` uses to cross-check before writing a bundle --
+/// getting it wrong there would reject every honest concat proof.
+#[test]
+fn concat_source_commitments_cover_only_their_spans() {
+    const CBATCH: usize = 10;
+    const CDEPTH: usize = 8;
+    const FIXTURE_B: &str = "raw_audios/rc_1c_44100sr_8bd.wav";
+
+    let comp_size = comp_size_for(CDEPTH);
+    let samples_per_step = CBATCH * comp_size;
+    let padded = samples_per_step * 4;
+    let len_a = ((padded / 2) / samples_per_step) * samples_per_step;
+
+    let edit = find_edit("concat").expect("concat is a known edit");
+    let circuit_name = circuit_name_for(edit.circuit_prefix, edit.factor, CDEPTH, CBATCH);
+    let r1cs = format!("artifacts/{circuit_name}.r1cs");
+    let wasm = format!("artifacts/{circuit_name}_js/{circuit_name}.wasm");
+    for needed in [r1cs.as_str(), wasm.as_str(), FIXTURE, FIXTURE_B] {
+        if !std::path::Path::new(needed).exists() {
+            eprintln!("SKIP: {needed} not found");
+            return;
+        }
+    }
+
+    let (sa, _) = audio_parser::read_samples_signed(FIXTURE);
+    let (sb, _) = audio_parser::read_samples_signed(FIXTURE_B);
+    let a: Vec<i32> = sa[..padded].to_vec();
+    let b: Vec<i32> = sb[..padded].to_vec();
+
+    let ctx = EditCtx {
+        bit_depth: CDEPTH,
+        batch_size: CBATCH,
+        start_index: 0,
+        comp_size,
+        period: 8820,
+    };
+    let out: Vec<i32> = (edit.apply2.expect("concat uses apply2"))(&a, &b, &ctx);
+
+    let json_path = format!("serialized/_test_concat_spans_{circuit_name}_N{padded}.json");
+    audio_parser::serialize_merge_at(&a, &b, &out, samples_per_step, CDEPTH as u32, &json_path);
+
+    let cfg = RunConfig {
+        circuit_filepath: &r1cs,
+        witness_gen_filepath: &wasm,
+        json_input_filepath: &json_path,
+        skip_compressed: true,
+        verbose: false,
+        progress: false,
+        multi_input: edit.multi_input,
+        initial_state: vec![(4usize, len_a as u64)],
+        state_width: edit.state_width,
+    };
+    let meta = CaseMeta {
+        circuit_name: circuit_name.clone(),
+        edit: "concat".to_string(),
+        audio_input: FIXTURE.to_string(),
+        bit_depth: CDEPTH,
+        batch_size: CBATCH,
+        comp_size,
+        total_samples: padded,
+        repetition: 0,
+    };
+
+    let metrics = zk_audio::circuit::run_proof(&cfg, &meta).expect("concat proof run");
+    let _ = std::fs::remove_file(&json_path);
+
+    let kind = BatchHashKind::for_circuit(&circuit_name);
+    let commit =
+        |s: &[i32]| audio_parser::hex_stream_commitment::<Fq>(s, CDEPTH as u32, samples_per_step, kind);
+
+    assert_eq!(
+        commit(&a[..len_a]),
+        metrics.final_hash_original,
+        "h_a must cover exactly A's pre-join span"
+    );
+    assert_eq!(
+        commit(&b[len_a..]),
+        metrics.final_hash_b.clone().expect("concat reports a stream-B hash"),
+        "h_b must cover exactly B's post-join span"
+    );
+    assert_eq!(commit(&out), metrics.final_hash_edited, "h_out covers the whole output");
+
+    // The whole-stream commitments must NOT match, or the gating would be
+    // untested and the CLI could use the simpler (wrong) spans.
+    assert_ne!(commit(&a), metrics.final_hash_original, "A's chain is gated");
+    assert_ne!(
+        commit(&b),
+        metrics.final_hash_b.clone().unwrap(),
+        "B's chain is gated"
+    );
+}
+
+/// Merge folds both sources whole, so each chain IS a commitment to its
+/// stream -- the property the CLI's `source B bound` check relies on.
+#[test]
+fn merge_source_commitments_cover_whole_streams() {
+    const MBATCH: usize = 10;
+    const MDEPTH: usize = 8;
+    const FIXTURE_B: &str = "raw_audios/rc_1c_44100sr_8bd.wav";
+
+    let comp_size = comp_size_for(MDEPTH);
+    let samples_per_step = MBATCH * comp_size;
+    let padded = samples_per_step * 3;
+
+    let edit = find_edit("merge").expect("merge is a known edit");
+    let circuit_name = circuit_name_for(edit.circuit_prefix, edit.factor, MDEPTH, MBATCH);
+    let r1cs = format!("artifacts/{circuit_name}.r1cs");
+    let wasm = format!("artifacts/{circuit_name}_js/{circuit_name}.wasm");
+    for needed in [r1cs.as_str(), wasm.as_str(), FIXTURE, FIXTURE_B] {
+        if !std::path::Path::new(needed).exists() {
+            eprintln!("SKIP: {needed} not found");
+            return;
+        }
+    }
+
+    let (sa, _) = audio_parser::read_samples_signed(FIXTURE);
+    let (sb, _) = audio_parser::read_samples_signed(FIXTURE_B);
+    let a: Vec<i32> = sa[..padded].to_vec();
+    let b: Vec<i32> = sb[..padded].to_vec();
+
+    let ctx = EditCtx {
+        bit_depth: MDEPTH,
+        batch_size: MBATCH,
+        start_index: 0,
+        comp_size,
+        period: 8820,
+    };
+    let out: Vec<i32> = (edit.apply2.expect("merge uses apply2"))(&a, &b, &ctx);
+
+    let json_path = format!("serialized/_test_merge_whole_{circuit_name}_N{padded}.json");
+    audio_parser::serialize_merge_at(&a, &b, &out, samples_per_step, MDEPTH as u32, &json_path);
+
+    let cfg = RunConfig {
+        circuit_filepath: &r1cs,
+        witness_gen_filepath: &wasm,
+        json_input_filepath: &json_path,
+        skip_compressed: true,
+        verbose: false,
+        progress: false,
+        multi_input: edit.multi_input,
+        initial_state: Vec::new(),
+        state_width: edit.state_width,
+    };
+    let meta = CaseMeta {
+        circuit_name: circuit_name.clone(),
+        edit: "merge".to_string(),
+        audio_input: FIXTURE.to_string(),
+        bit_depth: MDEPTH,
+        batch_size: MBATCH,
+        comp_size,
+        total_samples: padded,
+        repetition: 0,
+    };
+
+    let metrics = zk_audio::circuit::run_proof(&cfg, &meta).expect("merge proof run");
+    let _ = std::fs::remove_file(&json_path);
+
+    let kind = BatchHashKind::for_circuit(&circuit_name);
+    let commit =
+        |s: &[i32]| audio_parser::hex_stream_commitment::<Fq>(s, MDEPTH as u32, samples_per_step, kind);
+
+    assert_eq!(commit(&a), metrics.final_hash_original, "h_a commits to all of A");
+    assert_eq!(
+        commit(&b),
+        metrics.final_hash_b.clone().expect("merge reports a stream-B hash"),
+        "h_b commits to all of B"
+    );
+    assert_eq!(commit(&out), metrics.final_hash_edited);
+
+    // Merge averages, so swapping the sources leaves the output identical
+    // but swaps which commitment is which: the bundle's ordering carries
+    // information the output alone does not.
+    let swapped: Vec<i32> = (edit.apply2.unwrap())(&b, &a, &ctx);
+    assert_eq!(swapped, out, "merge commutes in its values");
+    assert_ne!(
+        metrics.final_hash_original, metrics.final_hash_b.clone().unwrap(),
+        "the two source commitments must be distinguishable"
+    );
+}

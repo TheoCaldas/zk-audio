@@ -60,6 +60,16 @@ pub struct ProofBundle {
     pub z0: Vec<u64>,
     pub h_orig: String,
     pub h_edit: String,
+    /// Stream B's commitment, for the two-input relations. `h_orig` is
+    /// stream A's, so a merge or concat bundle names both sources and the
+    /// verifier checks each against its own signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub h_b: Option<String>,
+    /// Concat's join point, in samples. Part of the statement: the output
+    /// is A's samples below it followed by B's from it on, and the circuit
+    /// carries it through the fold chain unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub len_a: Option<usize>,
     /// The serialized `CompressedSNARK`, nested rather than encoded so the
     /// bundle is one JSON document.
     pub proof: serde_json::Value,

@@ -197,20 +197,31 @@ source stream and signs it. Prompts for bit depth and batch size, because
 recomputable by a verifier that knows them. Writes `<stem>.sig.json`.
 
 **B — prove an edit.** Pick an operation from the provable edits, choose bit
-depth and batch size, pick how many folds to prove, and confirm after seeing
-the predicted time. Writes the edited WAV and `<stem>.proof.json` (~24 KB).
+depth and batch size, pick how many samples to prove, and confirm after
+seeing the predicted time. Writes the edited WAV and `<stem>.proof.json`
+(~24 KB). The two-input relations (`merge`, `concat`) prompt for a second
+source and fold both streams in lockstep, capped at the shorter one.
 
-**C — verify a bundle.** Takes a signature, a proof and the edited audio,
-then reports each property separately:
+**C — verify a bundle.** Takes a proof, a signature per source and the
+edited audio, then reports each property separately:
 
 ```
-bundles agree        OK        1ms   same h_orig, bd=8, B=10
-proof                OK       3.6s   verified, 3 steps
+bundles agree        OK        0ms   same h_orig, bd=8, B=10, N=110250
+proof                OK       3.1s   verified, 356 steps
 bundle commitments   OK        0ms   h_orig and h_edit match the proof's terminal state
-edited audio         OK        4ms   recomputed h_edit matches (930 samples)
-signature            OK        0ms   valid over h_orig, using the key in the bundle
-verifier key                  2.7s   derived from the circuit
-total                         6.3s
+edited audio         OK       52ms   recomputed h_edit matches (110250 samples, padded to 110360)
+signature            OK        0ms   valid over (h_orig, N=110250), using the key in the bundle
+verifier key                  2.2s   derived from the circuit
+total                         5.3s
+```
+
+A merge adds a check per source, since the statement names two of them:
+
+```
+bundle commitments   OK        0ms   h_a, h_edit and h_b match the proof's terminal state
+signature A          OK        0ms   valid over (h_orig, N=110250), using the key in the bundle
+signature B          OK        0ms   valid over (h_orig, N=110250), using the key in the bundle
+source B bound       OK        0ms   the signed source B is the stream the proof folded
 ```
 
 Every step is timed. Nearly all of the wall clock is the proof check plus
@@ -235,9 +246,20 @@ Two things to know:
   the statement. A verifier key shipped inside a bundle would prove nothing,
   since a forger supplies both; it is also ~28 MB against a 24 KB proof.
 
-The nine production edits are offered at 8, 16 and 24 bits, all at
-`B=100`. Not listed: `concat` and `merge`, which need a second input
-stream, and `gain2`, the pre-sponge baseline.
+- **A concat proof does not bind its sources to signed originals.** Concat
+  gates its source chains, so `h_a` commits to A's samples below the join
+  and `h_b` to B's from it on — spans, not whole streams. A signature over
+  a whole source therefore cannot equal either, by construction, so C
+  reports `bundles agree` as *not applicable* and says in the verdict that
+  the signatures establish only that those keys signed *some* stream. What
+  a concat proof does establish is the join itself: the output is exactly
+  the samples in `h_a` followed by those in `h_b`, boundary included, since
+  `len_a` travels in the IVC state and the verifier reads it back.
+
+All eleven production edits are offered: the nine single-input ones at 8,
+16 and 24 bits, plus `merge` and `concat` at 8 bits. Not listed: `gain2`,
+the pre-sponge baseline, and the ablation variants, several of which are
+deliberately unsound.
 
 ## What `main.rs` does
 
@@ -483,8 +505,9 @@ benchmark needed them.
 `gain2` is kept for benchmark comparison and is **not offered by the
 CLI**: it absorbs with the arity-2 chain rather than the rate-4 sponge
 (see [Poseidon parity](#poseidon-parity)), so its commitments are not
-interchangeable with the production circuits'. `concat` and `merge` need a
-second input stream and are not in the CLI either.
+interchangeable with the production circuits'. `concat` and `merge` are
+offered; both prompt for a second source, and a concat proof commits to
+spans of its sources rather than to whole streams.
 
 The `gain_k2_{nohash,wide,wide4,wide8,onehash,sponge4,sponge8,sponge2h}`
 entries are **hashing ablations for the optimisation study**, not usable

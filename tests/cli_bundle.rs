@@ -44,6 +44,8 @@ fn proof_bundle_round_trips() {
         z0: vec![0, 0],
         h_orig: "0xaa".to_string(),
         h_edit: "0xbb".to_string(),
+        h_b: None,
+        len_a: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -157,6 +159,8 @@ fn bundles_carry_both_lengths() {
         z0: vec![0, 0],
         h_orig: "0xaa".to_string(),
         h_edit: "0xbb".to_string(),
+        h_b: None,
+        len_a: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -186,5 +190,95 @@ fn a_bundle_without_a_padded_length_is_rejected() {
     .unwrap();
     let r: Result<ProofBundle, _> = bundle::read(path);
     assert!(r.is_err(), "a v1 bundle must not load as v2");
+    let _ = std::fs::remove_file(path);
+}
+
+/// A merge bundle names two sources, so both commitments must survive a
+/// round trip; a verifier checks each against its own signature.
+#[test]
+fn a_two_input_bundle_round_trips_both_sources() {
+    let path = "/tmp/_zk_merge_bundle.json";
+    let b = ProofBundle {
+        kind: ProofBundle::KIND.to_string(),
+        circuit_name: "merge_b8_avg_B10".to_string(),
+        edit: "merge".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        comp_size: 31,
+        samples: 3100,
+        padded_samples: 3100,
+        iterations: 10,
+        z0: vec![0, 0, 0],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xbb".to_string(),
+        h_b: Some("0xcc".to_string()),
+        len_a: None,
+        proof: serde_json::json!({"stub": true}),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: ProofBundle = bundle::read(path).expect("read");
+    assert_eq!(back.h_b.as_deref(), Some("0xcc"));
+    assert_eq!(back.len_a, None, "merge has no join point");
+    let _ = std::fs::remove_file(path);
+}
+
+/// Concat's join point is part of the statement: the circuit carries it
+/// through the fold chain, so a bundle that lost it could not be checked.
+#[test]
+fn a_concat_bundle_carries_its_join_point() {
+    let path = "/tmp/_zk_concat_bundle.json";
+    let b = ProofBundle {
+        kind: ProofBundle::KIND.to_string(),
+        circuit_name: "concat_b8_B10".to_string(),
+        edit: "concat".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        comp_size: 31,
+        samples: 6200,
+        padded_samples: 6200,
+        iterations: 20,
+        z0: vec![0, 0, 0, 0, 3100],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xbb".to_string(),
+        h_b: Some("0xcc".to_string()),
+        len_a: Some(3100),
+        proof: serde_json::json!({"stub": true}),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: ProofBundle = bundle::read(path).expect("read");
+    assert_eq!(back.len_a, Some(3100));
+    // The join must also be the value z0 hands the circuit, or the proof
+    // would be verified against a different boundary than the bundle names.
+    assert_eq!(back.z0.get(4).copied(), Some(3100));
+    assert_eq!(back.len_a.unwrap() % (back.batch_size * back.comp_size), 0);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A single-input bundle omits both fields rather than writing nulls, so
+/// `h_b.is_some()` is what tells the verifier to ask for a second signature.
+#[test]
+fn a_single_input_bundle_omits_the_two_input_fields() {
+    let path = "/tmp/_zk_single_bundle.json";
+    let b = ProofBundle {
+        kind: ProofBundle::KIND.to_string(),
+        circuit_name: "gain_b8_k2_B10".to_string(),
+        edit: "gain_k2".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        comp_size: 31,
+        samples: 620,
+        padded_samples: 620,
+        iterations: 2,
+        z0: vec![0, 0],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xbb".to_string(),
+        h_b: None,
+        len_a: None,
+        proof: serde_json::json!({"stub": true}),
+    };
+    bundle::write(path, &b).expect("write");
+    let raw = std::fs::read_to_string(path).expect("read raw");
+    assert!(!raw.contains("h_b"), "h_b must be omitted, not null");
+    assert!(!raw.contains("len_a"), "len_a must be omitted, not null");
     let _ = std::fs::remove_file(path);
 }
