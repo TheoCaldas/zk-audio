@@ -88,6 +88,8 @@ fn main() {
 
     /* Serialize Samples */
     let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, padded_size);
+    // `serialized/` is gitignored, so a fresh checkout does not have it.
+    std::fs::create_dir_all("serialized").expect("cannot create serialized/");
     let orig_wide: Vec<i32> = original.to_vec();
     let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
     audio_parser::serialize_samples_at(

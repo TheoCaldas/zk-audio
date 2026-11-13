@@ -285,6 +285,9 @@ pub fn run() -> Result<(), String> {
     }
 
     let json_input = format!("serialized/{circuit_name}_N{usable}.json");
+    // `serialized/` is gitignored, so a fresh checkout does not have it.
+    std::fs::create_dir_all("serialized")
+        .map_err(|e| format!("cannot create serialized/: {e}"))?;
     match &original_b {
         // A two-input circuit reads stream B from `stream_b`; the
         // single-input serializer has no slot for it.
