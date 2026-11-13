@@ -24,14 +24,54 @@ Results land in `logs/bench/run-<timestamp>/`. Start with `summary.md`.
 
 ---
 
+## Before comparing against older runs
+
+Two changes split the benchmark history. Numbers from either side of them
+are not directly comparable.
+
+**The batch hasher changed.** Every edit now absorbs each batch with a
+rate-4 Poseidon sponge (`hasher_sponge.circom`) instead of the arity-2 chain
+it used before — same relation, same `(h_orig, h_edit)` IVC state, ~30-60%
+fewer constraints, **different commitment digest**. The pre-change circuits
+are preserved verbatim under `circuits/edits/_baseline/`, so any older run
+can still be reproduced; `circuits/CIRCUIT_INDEX.md` maps each logged
+`circuit_name` to both the file that produced it and the file carrying that
+name today.
+
+**The proving stack changed.** `nova-snark` moved 0.23 → 0.76 and witness
+generation moved in-process (`src/witness.rs`) instead of spawning `node`
+per fold. Folding is ~28% faster; `CompressedSNARK::prove` is slower but
+flat in N, and proofs are ~8% smaller.
+
+Existing results are filed by which stack produced them:
+
+```
+logs/bench/
+├── _baseline/      pre-optimisation results (arity-2 chain, nova 0.23)
+├── _experimental/  optimisation-study runs
+└── _old/           historical, no results.jsonl
+```
+
+New runs land in `logs/bench/run-<timestamp>/`, outside both — file them
+deliberately, or pass `--out logs/bench/_experimental`.
+
+---
+
 ## The two knobs
 
 Everything revolves around two numbers:
 
 | | Meaning |
 |---|---|
-| **B** (batch size) | Compressed field elements per Nova folding step. One element packs 15 audio samples, so a step covers `B × 15` samples. |
-| **N** (total samples) | How many audio samples get proven in total. Number of folding steps is `N / (B × 15)`. |
+| **B** (batch size) | Compressed field elements per Nova folding step. One element packs `comp_size` audio samples, so a step covers `B × comp_size` samples. |
+| **N** (total samples) | How many audio samples get proven in total. Number of folding steps is `N / (B × comp_size)`. |
+
+`comp_size` — how many samples fit in one field element — is fixed by the bit
+depth, **not** by B: it is `15` at the default bd=16, but `31` at bd=8 and `9`
+at bd=24 (see [Different bit depth](#different-bit-depth)). Every
+`B × comp_size` below therefore means `B × 15` only at the default depth. The
+code calls the product `samples_per_step`, and `--dry-run` prints it per cell
+as `samples/st`.
 
 The suite sweeps every valid combination of the two.
 
@@ -82,8 +122,9 @@ no default.
 ### Not every (B, N) pair is valid
 
 A case only runs if **N divides evenly into whole batches**, i.e.
-`N % (B × 15) == 0`. Otherwise the last batch would be short and the circuit
-rejects it.
+`N % (B × comp_size) == 0`. Otherwise the last batch would be short and the
+circuit rejects it. The skip is reported as `NotDivisible`, with the
+`samples_per_step` it failed against.
 
 So some cells get skipped automatically, and that's expected:
 
@@ -98,7 +139,10 @@ So some cells get skipped automatically, and that's expected:
 `--dry-run` shows you this table before committing to a long run. **Always
 dry-run first.**
 
-> The usable set is **B ∈ {10, 40, 100, 200}**.
+> Compiled batch sizes depend on the edit. `gain_k2` at bd=8 has
+> **B ∈ {10, 50, 100, 200, 400, 800, 1000, 1600}**; most other edits have
+> **{10, 100}**. `ls artifacts/*.r1cs` shows what exists; a missing one is
+> reported as a skip with the `compile.circuit.sh` line to create it.
 
 ---
 
@@ -112,8 +156,9 @@ dry-run first.**
 | `--sample-rate <hz>` | `44100` | Rate assumed by `--durations` |
 | `--channels <n>` | `2` | Channels assumed by `--durations` |
 | `--batch-sizes <list>` | `10,40,100,200` | Comma-separated B values |
-| `--bit-depth <n>` | `16` | Only 16 is compiled today |
+| `--bit-depth <n>` | `16` | 8, 16 or 24 |
 | `--input <path>` | `raw_audios/2c_44sr_16bd_01.wav` | WAV to prove over |
+| `--input-b <path>` | — | Second WAV; required by `merge` and `concat` |
 | `--edit <name>` | `gain2` | Which edit relation to prove |
 | `--out <dir>` | `logs/bench` | Where results go |
 | `--repeat <n>` | `3` | Repetitions per case (for timing spread) |
@@ -221,7 +266,7 @@ Two things to know:
 Each run creates a timestamped directory:
 
 ```
-logs/bench/run-1791754350/
+logs/bench/_baseline/run-1791754350/
 ├── summary.md       ← start here: pivot tables, human-readable
 ├── results.jsonl    ← one JSON object per case (the real data)
 ├── results.csv      ← same rows, flat, for spreadsheets
@@ -312,7 +357,7 @@ Plain Python, no dependencies:
 ```python
 import json, statistics, collections
 
-path = "logs/bench/run-1791754350/results.jsonl"
+path = "logs/bench/_baseline/run-1791754350/results.jsonl"
 rows = [json.loads(l) for l in open(path)]
 ok = [r for r in rows if r["status"] == "ok"]
 
@@ -328,11 +373,29 @@ Or with pandas, if you have it:
 
 ```python
 import pandas as pd
-df = pd.read_json("logs/bench/run-1791754350/results.jsonl", lines=True)
+df = pd.read_json("logs/bench/_baseline/run-1791754350/results.jsonl", lines=True)
 ok = df[df.status == "ok"]
 ok.pivot_table(index="total_samples", columns="batch_size",
                values="recursive_prove_ms", aggfunc="median")
 ```
+
+### Or use the scripts
+
+`scripts/` has plotters and a cost model that already apply the same
+median-and-half-range aggregation the suite's own `summary.md` uses, so
+figures agree with it. See [scripts/README.md](../scripts/README.md).
+
+```bash
+# figures for one run -> <run>/plots/
+/usr/bin/python3 scripts/plot_bench.py logs/bench/_baseline/run-1792898036
+
+# predict a configuration without running it
+python3 scripts/predict_proof_time.py --edit gain_k2 --bit-depth 8 \
+    --batch-size 100 --duration 600
+```
+
+The plotters need matplotlib, which the default Homebrew `python3` does not
+have; `/usr/bin/python3` does.
 
 Each row also carries `peak_rss_bytes`, `rss_baseline_bytes`,
 `peak_rss_public_params_bytes`, `peak_rss_recursive_prove_bytes` and
@@ -375,7 +438,7 @@ The default fixture covers N up to 600,000 but **not** any of the duration
 targets — the shortest, 10 s, already needs 882,000 samples. Use
 `sweep_120s_2c_44sr_16bd.wav` for duration runs; it is a deterministic
 80 Hz→4 kHz log sweep plus dither, regenerable bit-identically with
-[docs/gen_bench_fixture.py](gen_bench_fixture.py).
+[scripts/gen_bench_fixture.py](../scripts/gen_bench_fixture.py).
 
 Its amplitude is capped at ±8000 (about a quarter of full scale) **on purpose**:
 `gain2` is `x * 2` with no clamping on either side, so samples near full scale
@@ -395,12 +458,18 @@ The sources are organised by edit family; shared primitives stay at the root:
 ```
 circuits/
 ├── hasher.circom          — Poseidon wrappers (shared)
+├── hasher_sponge.circom   — SpongeBatchHasher: the DEFAULT batch hasher
+├── hasher_wide.circom     — WideBatchHasher (tree); benchmark variant only
 ├── decompressor.circom    — Decompressor + Recompressor (shared)
 ├── circom/                — vendored circomlib
+├── CIRCUIT_INDEX.md       — maps logged circuit_name -> source file
 ├── edits/
-│   ├── gain/              — gain_step.circom + gain_b{8,16}_k*_B*.circom
-│   └── attenuation/       — atten_step.circom + atten_b{8,16}_m*_B*.circom
-└── old/                   — pre-reorganisation circuits, incl. the
+│   ├── gain/              — gain_step.circom + gain_b{8,16,24}_k*_B*.circom
+│   │   └── _experimental/ — hashing variants from the optimisation study
+│   ├── attenuation/ concat/ crop/ distortion/ merge/ tremolo/
+│   └── _baseline/         — pre-optimisation copies of every circuit above,
+│                            using the arity-2 Poseidon chain
+└── _old/                  — pre-reorganisation circuits, incl. the
                              `multiplier` (gain2) baseline still in use
 ```
 
@@ -419,16 +488,31 @@ primitives along.
 
 ### The edit registry today
 
-| Edit | Factor k | Clamps? | Bit depths | Circuit artifacts |
+| Edit | Relation | Clamps? | Bit depths | Circuit artifacts |
 |---|---|---|---|---|
-| `gain2` | 2 | **no** | 16 | `multiplier_b16_B{10,40,100,200}` |
-| `gain_k2` | 2 | yes | 8, 16 | `gain_b{8,16}_k2_B{10,100}` |
-| `gain_k3` | 3 | yes | 16 | `gain_b16_k3_B{10,100}` |
-| `gain_k4` | 4 | yes | 8, 16 | `gain_b{8,16}_k4_B{10,100}` |
+| `gain2` | `x*2`, no clamp | **no** | 16 | `multiplier_b16_B{10,40,100,200}` |
+| `gain_k2` | `clamp(2x)` | yes | 8, 16, 24 | `gain_b{8,16,24}_k2_B*` |
+| `gain_k3` | `clamp(3x)` | yes | 16 | `gain_b16_k3_B100` |
+| `gain_k4` | `clamp(4x)` | yes | 8, 16 | `gain_b{8,16}_k4_B100` |
+| `atten_m1` | `floor(x/2)` | no | 8, 16 | `atten_b{8,16}_m1_B100` |
+| `atten_m2` | `floor(x/4)` | no | 8, 16 | `atten_b{8,16}_m2_B100` |
+| `crop` | verbatim window + counter | no | 8 | `crop_b8_B{10,100}` |
+| `concat` | `A[..k] ++ B[k..]` | no | 8 | `concat_b8_B{10,100}` |
+| `merge` | `floor((a+b)/2)` | no | 8 | `merge_b8_avg_B{10,100}` |
+| `tremolo_f5` | LFO multiply, 5 Hz | no | 8 | `tremolo_b8_f5_B{10,100}` |
+| `dist_d100` | rectifier fold, 100% wet | yes | 8 | `dist_b8_d100_B{10,100}` |
+| `dist_d50` | rectifier fold, 50% wet | yes | 8 | `dist_b8_d50_B100` |
+
+`merge` and `concat` take two streams: pass `--input-b <wav>`. The registry
+also holds benchmark-only `gain_k2_{nohash,onehash,wide*,sponge*}` variants
+from the hashing study — `gain_k2_nohash`, `gain_k2_onehash` and
+`gain_k2_sponge{4,8}` are **unsound** (no binding to the published audio) and
+exist only to price the commitment. Their circuits live in
+`circuits/edits/gain/_experimental/` with warnings in the source.
 
 `gain2` is the **original unclamped baseline**, kept unchanged so the
 duration-scaling results in
-[duration_scaling_conclusions.md](duration_scaling_conclusions.md) remain
+[analyses/duration_scaling_conclusions.md](analyses/duration_scaling_conclusions.md) remain
 valid and comparable. It requires audio with headroom, since `x * 2` must not
 overflow.
 
@@ -478,13 +562,23 @@ are not in the registry.
 
 ### Different bit depth
 
-`--bit-depth` accepts **8 or 16**. `comp_size` is derived as
-`(256 - bit_depth) / bit_depth`, so the packing density changes with the depth:
+`--bit-depth` accepts **8, 16 or 24**. `comp_size` is derived as
+`(256 - bit_depth) \ bit_depth` — **integer** division — so the packing
+density changes with the depth:
 
 | Bit depth | Samples per field element | Samples/step at B=10 | B=100 |
 |---|---|---|---|
-| 16 | 15 | 150 | 1,500 |
 | 8 | 31 | 310 | 3,100 |
+| 16 | 15 | 150 | 1,500 |
+| 24 | 9 | 90 | 900 |
+
+24 is the one depth where the division is **not** exact: 256 − 24 = 232, and
+232 = 9×24 + 16, so a packed element uses only 216 of its 232 available bits.
+Two consequences, both already handled: `Decompressor` decomposes
+`size * bit_depth` bits rather than all of `nBits` (otherwise 2^16 distinct
+field elements would unpack to the same samples), and every circom site
+computing `comp_size` uses `\` rather than `/`, because field division would
+yield a modular inverse instead of 9.
 
 **The N ladder does not work at 8 bits.** A B=10 step covers 310 samples, and no
 `60 × 10^k` value is a whole number of 310s, so every cell skips as
@@ -500,8 +594,11 @@ The suite also refuses to run when `--bit-depth` disagrees with the WAV's actual
 returns signed samples at both depths — it normalizes away the 8-bit unsigned
 on-disk storage convention itself — so no recentring is applied on read.
 
-Adding a third depth needs a new set of compiled `Gain(B, bit_depth, k)`
-instantiations; the circom template itself is already depth-generic.
+Per-sample cost rises with depth even though the per-fold cost falls, because
+`comp_size` shrinks faster: bd=24 costs ~3.1× bd=8 at equal N, bd=16 ~1.9×.
+
+A further depth needs a new set of compiled instantiations; the circom
+templates are depth-generic.
 
 ---
 
@@ -512,14 +609,15 @@ By design. Pick where the ladder stops: `--max-n 600` for a smoke test,
 `--max-n 600000` for the full sweep.
 
 **`no runnable cases; see skip reasons above`**
-Every cell was skipped. Usually `--max-n` is below `B × 15` for all your B
-values — e.g. `--max-n 600 --batch-sizes 200` needs 3000 samples per step.
-Lower B or raise `--max-n`.
+Every cell was skipped. Usually `--max-n` is below `B × comp_size` for all
+your B values — e.g. at bd=16 (`comp_size` 15), `--max-n 600 --batch-sizes 200`
+needs 3000 samples per step. Lower B or raise `--max-n`. At bd=8 the ladder
+cannot divide at all, whatever B — use `--n-list` instead.
 
 **`skip: missing artifact artifacts/multiplier_b16_B40.r1cs`**
 That circuit isn't compiled. The dry-run output prints the exact command:
 ```bash
-./compile.circuit.sh circuits/old/multiplier_b16_B40.circom
+./compile.circuit.sh circuits/_old/multiplier_b16_B40.circom
 ```
 
 **`WARNING: debug build — timings are not representative`**

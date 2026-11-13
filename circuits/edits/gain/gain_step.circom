@@ -1,6 +1,19 @@
 pragma circom 2.1.6;
 
+// ---------------------------------------------------------------------------
+// `Gain` now absorbs each batch with a rate-4 Poseidon sponge instead of
+// the arity-2 chain: same relation, same (h_orig, h_edit) IVC state,
+// different digest. -59% hashing constraints at B=100; -13.8% prove time
+// end to end. The pre-optimisation circuit is preserved at
+// circuits/edits/_baseline/gain/.
+//
+// `BatchCheckGain` below is unchanged and is reused by the benchmark variants
+// (gain_wide*, gain_sponge*, gain_nohash, gain_onehash), which define their
+// own main component and their own hashing.
+// ---------------------------------------------------------------------------
+
 include "hasher.circom";
+include "hasher_sponge.circom";
 include "decompressor.circom";
 include "circom/comparators.circom";
 include "circom/mux1.circom";
@@ -145,8 +158,8 @@ template Gain(batch_size, bit_depth, k) {
     signal input edit[batch_size];
 
     //=== Hash Components ===//
-    component orig_batch_hasher = BatchHasher(batch_size);
-    component edit_batch_hasher = BatchHasher(batch_size);
+    component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
+    component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
     component edit_hasher = Hasher(2);
 

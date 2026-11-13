@@ -678,14 +678,16 @@ pub fn circuit_name_for(
 pub fn circuit_source_dir(prefix: &str) -> &'static str {
     match prefix {
         "gain" => "circuits/edits/gain",
-        "gain_nohash" => "circuits/edits/gain",
-        "gain_wide" => "circuits/edits/gain",
-        "gain_onehash" => "circuits/edits/gain",
-        "gain_sponge2h" => "circuits/edits/gain",
-        "gain_sponge8" => "circuits/edits/gain",
-        "gain_sponge4" => "circuits/edits/gain",
-        "gain_wide8" => "circuits/edits/gain",
-        "gain_wide4" => "circuits/edits/gain",
+        // Hashing-variant circuits from the optimisation study live in a
+        // subfolder so the family root holds only production instantiations.
+        "gain_nohash" => "circuits/edits/gain/_experimental",
+        "gain_wide" => "circuits/edits/gain/_experimental",
+        "gain_onehash" => "circuits/edits/gain/_experimental",
+        "gain_sponge2h" => "circuits/edits/gain/_experimental",
+        "gain_sponge8" => "circuits/edits/gain/_experimental",
+        "gain_sponge4" => "circuits/edits/gain/_experimental",
+        "gain_wide8" => "circuits/edits/gain/_experimental",
+        "gain_wide4" => "circuits/edits/gain/_experimental",
         "atten" => "circuits/edits/attenuation",
         "tremolo" => "circuits/edits/tremolo",
         "dist" => "circuits/edits/distortion",
@@ -693,7 +695,7 @@ pub fn circuit_source_dir(prefix: &str) -> &'static str {
         "merge" => "circuits/edits/merge",
         "concat" => "circuits/edits/concat",
         // The gain2 baseline still lives in the pre-reorganisation tree.
-        _ => "circuits/old",
+        _ => "circuits/_old",
     }
 }
 

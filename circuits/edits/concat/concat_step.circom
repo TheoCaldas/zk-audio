@@ -1,6 +1,23 @@
 pragma circom 2.1.6;
 
+// ---------------------------------------------------------------------------
+// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
+//
+// Identical to the baseline step circuit in every respect except how each
+// batch is absorbed into the running commitment: `BatchHasher` chains B-1
+// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
+// permutations of Poseidon(5). Both running hashes are kept, so the IVC
+// state and the proven relation are unchanged.
+//
+// -59% hashing constraints at B=100; -13.8% prove time end to end.
+//
+// The DIGEST DIFFERS from the baseline's, so commitments produced here do
+// not match pre-optimisation runs. The baseline circuits are preserved
+// under circuits/edits/_baseline/ for reproducing the old numbers.
+// ---------------------------------------------------------------------------
+
 include "hasher.circom";
+include "hasher_sponge.circom";
 include "circom/bitify.circom";
 include "circom/comparators.circom";
 include "circom/mux1.circom";
@@ -159,10 +176,10 @@ template Concat(batch_size, bit_depth) {
     // The output chain absorbs whichever one the phase selected, which
     // equals `out` by the check below - so no third BatchHasher is
     // needed.
-    component a_batch = BatchHasher(batch_size);
+    component a_batch = SpongeBatchHasher(batch_size, 4);
     a_batch.batch <== a;
 
-    component b_batch = BatchHasher(batch_size);
+    component b_batch = SpongeBatchHasher(batch_size, 4);
     b_batch.batch <== b;
 
     component picked_batch = Mux1();

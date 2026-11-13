@@ -1,6 +1,23 @@
 pragma circom 2.1.6;
 
+// ---------------------------------------------------------------------------
+// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
+//
+// Identical to the baseline step circuit in every respect except how each
+// batch is absorbed into the running commitment: `BatchHasher` chains B-1
+// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
+// permutations of Poseidon(5). Both running hashes are kept, so the IVC
+// state and the proven relation are unchanged.
+//
+// -59% hashing constraints at B=100; -13.8% prove time end to end.
+//
+// The DIGEST DIFFERS from the baseline's, so commitments produced here do
+// not match pre-optimisation runs. The baseline circuits are preserved
+// under circuits/edits/_baseline/ for reproducing the old numbers.
+// ---------------------------------------------------------------------------
+
 include "hasher.circom";
+include "hasher_sponge.circom";
 include "decompressor.circom";
 include "circom/bitify.circom";
 include "circom/comparators.circom";
@@ -21,7 +38,7 @@ include "circom/mux1.circom";
 // This is the first edit needing BOTH of the hard pieces:
 //
 //   * |x| requires a SIGN TEST - a comparator plus a multiplexer per
-//     sample. `circuits/old/dist_step.circom` was an abandoned attempt
+//     sample. `circuits/_old/dist_step.circom` was an abandoned attempt
 //     at exactly this; its sign handling was left commented out and it
 //     hand-rolled a comparator rather than using circomlib's. This file
 //     uses the library primitives and handles the sign completely.
@@ -192,8 +209,8 @@ template Distort(batch_size, bit_depth, blend) {
     signal input edit[batch_size];
 
     //=== Hash Components ===//
-    component orig_batch_hasher = BatchHasher(batch_size);
-    component edit_batch_hasher = BatchHasher(batch_size);
+    component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
+    component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
     component edit_hasher = Hasher(2);
 

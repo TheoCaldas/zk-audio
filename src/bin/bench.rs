@@ -29,7 +29,7 @@ OPTIONS:
     --sample-rate <hz>       Rate assumed by --durations  [default: 44100]
     --channels <n>           Channels assumed by --durations        [default: 2]
     --batch-sizes <list>     Comma-separated B values    [default: 10,40,100,200]
-    --bit-depth <n>          Sample bit depth (8 or 16)  [default: 16]
+    --bit-depth <n>          Sample bit depth (8, 16 or 24) [default: 16]
     --input <path>           WAV input
                              [default: raw_audios/2c_44sr_16bd_01.wav]
     --input-b <path>         Second WAV, required by multi-input edits
