@@ -10,12 +10,12 @@
 //!
 //! Caveats that belong with every number this produces:
 //!
-//! - **Process-wide.** The figure covers the whole benchmark process,
+//! - Process-wide. The figure covers the whole benchmark process,
 //!   including the witness generator's allocations and anything else the
 //!   binary holds, not just the prover's own working set.
-//! - **Sampled.** A spike shorter than the poll interval can be missed, so
+//! - Sampled. A spike shorter than the poll interval can be missed, so
 //!   a reported peak is a lower bound on the true peak.
-//! - **Not a memory requirement.** RSS is resident pages, which the OS may
+//! - Not a memory requirement. RSS is resident pages, which the OS may
 //!   grow or reclaim under pressure; it is a measurement of this run on
 //!   this machine, not a minimum spec.
 

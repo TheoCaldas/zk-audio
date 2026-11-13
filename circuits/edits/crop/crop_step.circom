@@ -1,91 +1,18 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
 
 // CROP: a contiguous sub-selection of the samples, with no value change.
 //
-// Proves: "the edited stream is a verbatim, contiguous run of samples
-// drawn from a stream whose window commitment is step_out[0], beginning
-// at absolute index step_in[2] and ending at step_out[2]."
+// Proves the edited stream is a verbatim, contiguous run drawn from the
+// stream committed in step_out[0], from index step_in[2] to step_out[2].
+// Only the kept window is folded, so the relation is the identity; the
+// counter is what makes it a crop rather than a no-op.
 //
-// === Why crop is structurally unlike the other edits ===
-//
-// Gain, attenuation, tremolo and distortion are all one-in-one-out:
-// N_edit == N_orig, and the step circuit folds both streams in lockstep
-// under the relation edit[i] = f(orig[i]). Crop breaks that invariant -
-// the output is SHORTER than the input - so there is no per-sample
-// correspondence across the whole file.
-//
-// This implementation (design "Option A") resolves that by folding ONLY
-// the kept window. The prover never presents the discarded samples, so
-// every step does have a one-to-one correspondence, and the relation
-// collapses to the identity. What makes it a crop rather than a no-op is
-// the IVC counter: the window's start and end are public, so the
-// statement says WHICH contiguous run was kept, not merely that some run
-// was.
-//
-// === The bounds are free ===
-//
-// No extra public signals and no per-step range checks are needed,
-// because the counter already carries them:
-//
-//     step_in[2]  at the first fold  == start   (verifier supplies z0)
-//     step_out[2] at the last fold   == end     (verifier reads it)
-//
-// and each step advances the counter by exactly one batch. A prover
-// cannot claim a different window without changing values the verifier
-// already sees.
-//
-// === No decompression needed ===
-//
-// Unlike every other edit, this circuit does NOT call Decompressor.
-// Comparing the packed field elements directly is sound: the packing is
-// injective over in-range digits (it is a positional base-2^bit_depth
-// encoding), so orig[j] == edit[j] as field elements implies the
-// underlying samples are equal digit for digit. Decomposing to compare
-// per-sample would add thousands of constraints and prove nothing extra.
-//
-// Consequently this is the cheapest edit in the project: its cost is
-// essentially the Poseidon hashing that every edit pays, plus
-// batch_size field equalities.
-//
-// === What this does and does not prove ===
-//
-// It DOES prove the excerpt is unmodified and contiguous, and it pins
-// the excerpt's position relative to the counter's origin.
-//
-// It does NOT bind the excerpt to a specific larger original: the outer
-// file's hash never enters the statement, because a sequential
-// Merkle-Damgard chain cannot be opened at an interior window. Proving
-// "this excerpt is positions 1000..2499 of the file with root R" needs
-// the original committed as a Merkle tree instead (design "Option B"),
-// which would change the commitment scheme for every edit and
-// invalidate existing commitment tables. That is left as future work and
-// should be stated as a limitation wherever this edit is reported.
-//
-// === Composition caveat ===
-//
-// Because the running hash depends on the entire prefix, crop does NOT
-// commute with the pointwise edits: crop-then-gain and gain-then-crop
-// yield different commitments. All the other edits commute with each
-// other; crop is the first where the order is part of the statement.
+// Does NOT bind the excerpt to a larger original. See
+// docs/crop_and_concat.md, which states the limitation to report.
 
 template CropCheck(batch_size) {
     signal input orig[batch_size];
@@ -104,17 +31,15 @@ template Crop(batch_size, bit_depth) {
     // instead of 9, which circom then rejects as an array size.
     var comp_size = (256 - bit_depth) \ bit_depth;
 
-    //=== IVC state: two hashes PLUS the sample counter ===//
+    // Third state element: the sample counter.
     // The counter is what distinguishes a crop from a no-op: it makes
     // the window's start and end public.
     signal input step_in[3];   // (prev_orig_hash, prev_edit_hash, sample_index)
     signal output step_out[3];
 
-    //=== Current Batches ===//
     signal input orig[batch_size];
     signal input edit[batch_size];
 
-    //=== Hash Components ===//
     component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
@@ -135,7 +60,6 @@ template Crop(batch_size, bit_depth) {
     // window to [z0[2], z0[2] + N).
     step_out[2] <== step_in[2] + batch_size * comp_size;
 
-    //=== Verifier Component ===//
     component check = CropCheck(batch_size);
     check.orig <== orig;
     check.edit <== edit;

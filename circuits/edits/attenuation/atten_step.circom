@@ -1,73 +1,33 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
 include "decompressor.circom";
 include "circom/bitify.circom";
 
-// Volume REDUCTION by a power of two: proves `edit = floor(orig / 2^m)`
-// for m >= 1, i.e. gain factors k = 1/2, 1/4, 1/8, ... (-6dB per step).
+// Volume reduction by a power of two: proves `edit = floor(orig / 2^m)`
+// for m >= 1, i.e. k = 1/2, 1/4, 1/8 (-6dB per step).
 //
-// Companion to `gain_step.circom` (k > 1, amplification). Kept separate
-// because the two relations differ structurally, not just in a constant:
+// Needs no clamp, unlike gain_step.circom: |x/2^m| <= |x| never leaves the
+// representable range. Fields have no division, so this is a shift -
+// decompose and drop the low m bits, which is floor division, and the
+// remainder bits fall out of the decomposition for free.
 //
-//   * Amplification can leave the representable range, so it needs a
-//     clamp: two comparators and two muxes per sample.
-//   * Attenuation can NEVER leave the range (|x/2^m| <= |x|), so it needs
-//     no clamp at all.
-//   * Fields have no division, so attenuation is a shift: decompose and
-//     drop the low m bits. That IS floor division, and it is cheap here
-//     because the remainder bits come out of the decomposition for free -
-//     no separate division-with-remainder witness, and no range check on
-//     a remainder.
+// Rounding is FLOOR, matching an arithmetic right shift, not Rust's `/`
+// which truncates toward zero (-7/4 is -1 truncated, -2 floored). The Rust
+// reference uses `>>`; atten_floor_matches_circuit_exhaustively pins the
+// agreement at bd 8 and 16. Floor biases every sample down by up to one
+// LSB.
 //
-// === Rounding convention ===
-//
-// FLOOR (toward negative infinity), matching an arithmetic right shift.
-// This is NOT Rust's `/` operator, which truncates toward zero and
-// disagrees on negatives: -7/4 is -1 truncated but -2 floored. The Rust
-// reference uses `>>` to match, and
-// `atten_floor_matches_circuit_exhaustively` pins the agreement over
-// every input at bd in {8,16}.
-//
-// Floor is chosen over round-half-up because it falls straight out of the
-// bit decomposition at zero extra cost. The DC-offset consequence is
-// real but tiny: it biases every sample down by up to one LSB, which at
-// 8-bit is -1/256 of full scale.
-//
-// === The normalized-space formulation ===
-//
-// Samples arrive normalized: `orig_n = orig_signed + half`, where
-// half = 2^(bit_depth-1). Shifting orig_n directly is WRONG - it is not
-// the normalization of the shifted signed value, and it disagrees for
-// EVERY input (verified: 256/256 mismatches at bd=8). Instead:
+// Samples arrive normalized (`orig_n = orig_signed + half`). Shifting
+// orig_n directly is wrong - it disagrees for every input. Instead, from
 //
 //     floor(s / 2^m) = floor((s + half*2^m) / 2^m) - half
 //
-// so with  v = orig_n + half*(2^m - 1)  =  s + half*2^m  >= 0:
-//
-//     edit_signed = (v >> m) - half
-//     edit_n      = edit_signed + half = v >> m
-//
-// The offset cancels exactly, so the circuit just decomposes v and reads
-// off the high bits. v needs `bit_depth + m` bits (its max is
-// half*(2^m - 1) + 2^bit_depth - 1).
+// take v = orig_n + half*(2^m - 1) = s + half*2^m >= 0, giving
+// edit_n = v >> m. The offset cancels exactly, so the circuit decomposes v
+// and reads off the high bits. v needs bit_depth + m bits.
 
 // Attenuates one already-normalized sample by 2^m, returning the
 // normalized edit digit. Output is provably in [0, 2^bit_depth - 1].
@@ -151,17 +111,13 @@ template BatchCheckAtten(batch_size, bit_depth, m) {
 }
 
 template Attenuate(batch_size, bit_depth, m) {
-    //=== Previous Hashes ===//
     signal input step_in[2]; // (prev_orig_hash, prev_edit_hash)
 
-    //=== Next Hashes ===//
     signal output step_out[2]; // (next_orig_hash, next_edit_hash)
 
-    //=== Current Batches ===//
     signal input orig[batch_size];
     signal input edit[batch_size];
 
-    //=== Hash Components ===//
     component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
@@ -177,7 +133,6 @@ template Attenuate(batch_size, bit_depth, m) {
     edit_hasher.values[1] <== edit_batch_hasher.hash;
     step_out[1] <== edit_hasher.hash;
 
-    //=== Verifier Component ===//
     component check = BatchCheckAtten(batch_size, bit_depth, m);
     check.orig <== orig;
     check.edit <== edit;

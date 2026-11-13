@@ -1,20 +1,5 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
@@ -25,52 +10,25 @@ include "circom/mux1.circom";
 
 // MERGE (mix two streams): out_i = clamp(a_i + b_i)
 //
-// === Why this one is structurally different ===
+// The only edit proving out = f(a, b): three streams folded per step, and
+// an IVC state carrying three hashes, one per stream. Tremolo and crop are
+// also three wide but use the third element for a sample counter - the
+// widths coincide, the meanings do not.
 //
-// Every other edit in this project proves a relation of the form
-// edit = f(orig): ONE input stream, ONE output stream, and an IVC state
-// carrying two running hashes. Merge proves out = f(a, b), which changes
-// the shape of the statement rather than just the arithmetic:
+// The claim is "this output derives from exactly these two committed
+// sources", so a verifier holding signatures over stem A and stem B can
+// check a mix contains precisely those stems.
 //
-//   * THREE streams are folded per step, not two.
-//   * The IVC state carries THREE hashes - one per stream - where the
-//     other three-wide edits (tremolo, crop) use the third element for a
-//     sample counter instead. The widths coincide; the meanings do not.
-//   * The provenance claim becomes "this output derives from exactly
-//     these two committed sources", which is the most expressive
-//     statement the project proves. A verifier holding signatures over
-//     stem A and stem B can check that a mix contains precisely those
-//     two stems and nothing else.
+// Clamping is mandatory on BOTH sides and is the common path for loud
+// material: at bit_depth 8 the pre-clamp signed sum spans -256..254
+// against a representable -128..127. Verified by enumerating the sum over
+// the full input domain at bd 8 and 16. The averaging variant cannot
+// overflow and needs no clamp.
 //
-// === Clamping is mandatory on BOTH sides ===
-//
-// Distortion could only exceed the upper bound. A sum of two full-scale
-// signals breaks both: at bit_depth 8 the pre-clamp signed sum spans
-// -256..254, against a representable -128..127. So saturation here is
-// not an edge case but the common path for loud material, and both
-// comparators are load-bearing. (Verified by enumerating the sum over
-// the full input domain at bit_depth in {8,16}.)
-//
-// Real mixers usually attenuate before summing rather than clamp,
-// because a clamped sum sounds like hard distortion. This circuit
-// implements the literal `a + b` that was asked for; an averaging
-// variant (which cannot overflow and therefore needs no clamp at all)
-// would be a cheaper separate instantiation.
-//
-// === Normalized space ===
-//
-// Streams arrive normalized: a_n = a + half, b_n = b + half. Then
-//
-//     s = a_n + b_n = (a + b) + 2*half   >=  0
-//
-// so the signed sum is s - 2*half and the normalized result before
-// clamping is t = s - half. Both are computed without any signed
-// intermediate; t may still fall outside [0, 2^bit_depth - 1] in either
-// direction, which is what the clamp fixes.
-//
-// No bit decomposition is needed for the arithmetic itself - the sum is
-// linear - but the comparators need one internally, and t's width must
-// cover s.
+// Streams arrive normalized, so s = a_n + b_n = (a + b) + 2*half >= 0 and
+// the normalized pre-clamp result is t = s - half, both computed with no
+// signed intermediate. The sum is linear, so no decomposition is needed
+// for the arithmetic; the comparators need one internally.
 
 // Clamps one normalized sum into [0, 2^bit_depth - 1].
 //
@@ -199,19 +157,17 @@ template BatchCheckMerge(batch_size, bit_depth, average) {
 }
 
 template Merge(batch_size, bit_depth, average) {
-    //=== IVC state: THREE hashes, one per stream ===//
+    // Three hashes, one per stream.
     // step_in[2] is stream B's running hash, NOT a sample counter as in
     // tremolo_step.circom and crop_step.circom. The state widths match
     // but the semantics differ, so a results row must record which.
     signal input step_in[3];   // (hash_a, hash_out, hash_b)
     signal output step_out[3];
 
-    //=== Current Batches ===//
     signal input a[batch_size];
     signal input b[batch_size];
     signal input out[batch_size];
 
-    //=== Hash Components ===//
     component a_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component b_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component out_batch_hasher = SpongeBatchHasher(batch_size, 4);
@@ -237,7 +193,6 @@ template Merge(batch_size, bit_depth, average) {
     b_hasher.values[1] <== b_batch_hasher.hash;
     step_out[2] <== b_hasher.hash;
 
-    //=== Verifier Component ===//
     component check = BatchCheckMerge(batch_size, bit_depth, average);
     check.a <== a;
     check.b <== b;

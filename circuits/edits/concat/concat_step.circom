@@ -1,20 +1,5 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
@@ -22,71 +7,13 @@ include "circom/bitify.circom";
 include "circom/comparators.circom";
 include "circom/mux1.circom";
 
-// CONCAT: the output is stream A played back followed by stream B.
+// CONCAT: the output is stream A followed by stream B, N_out = N_a + N_b,
+// with no sample value changed.
 //
-// Unlike merge, which sums two streams sample-for-sample, concat sums
-// them in DURATION: N_out = N_a + N_b, and no sample value changes.
-//
-// === Why a single hash chain would prove nothing ===
-//
-// The obvious design - fold the output while chaining "the source" -
-// collapses: since out[j] === src[j] for every batch, the source chain
-// and the output chain absorb identical values and are therefore always
-// equal. Such a proof says only "the output is some stream", which is
-// vacuous.
-//
-// What a verifier actually needs is that the output's chain equals A's
-// chain *continued by* B's, with A and B independently committed. That
-// requires TWO separate source chains, each a public output, covering
-// disjoint regions of the playback order.
-//
-// === Gated chains ===
-//
-// A Poseidon permutation cannot be skipped, so both source chains are
-// evaluated every step and a selector decides which one absorbs the
-// batch while the other passes through unchanged:
-//
-//     phase = (idx >= len_a)                       0 while in A, 1 in B
-//     hash_a' = phase ? hash_a : H(hash_a, hb)
-//     hash_b' = phase ? H(hash_b, hb) : hash_b
-//     hash_out' = H(hash_out, hb)                  always
-//
-// where hb is the batch hash. The selector costs ONE comparison per
-// step - it tests the counter, not individual samples.
-//
-// === Two BatchHashers, not three ===
-//
-// Each source chain absorbs its own batch, so A and B are hashed
-// separately. The output chain absorbs the SELECTED batch hash, which
-// equals `out` by the per-element check, so no third BatchHasher is
-// needed - the same number as every other edit, despite carrying an
-// extra chain.
-//
-// === len_a is a runtime public input ===
-//
-// The split point travels in the IVC state rather than being compiled
-// in, so one artifact serves any split. To keep the selector per-step
-// rather than per-sample, the circuit requires the boundary to fall on
-// a fold boundary:
-//
-//     len_a === q * (batch_size * comp_size)
-//
-// with q supplied by the prover. A straddling boundary would force a
-// per-sample gate - roughly 3,100 comparisons per step instead of one -
-// so this restriction is what keeps concat cheap. Valid splits are
-// therefore any whole number of folds, which at bd=8/B=100 is any
-// multiple of 3,100 samples (~35ms).
-//
-// === What this proves, and what it does not ===
-//
-// It proves: the output is exactly the samples committed in hash_a
-// followed by those in hash_b, in that order, with the boundary at
-// len_a. Swapping A and B gives a different hash_out, so order is part
-// of the statement - unlike merge, where addition commutes.
-//
-// It does NOT bind either source to a larger original, for the same
-// reason crop does not: a sequential chain cannot be opened at an
-// interior window. See crop_step.circom for that discussion.
+// Two gated source chains plus the output chain: a selector on the counter
+// decides which source absorbs each batch, so the output chain provably
+// equals A's continued by B's. The boundary must be fold-aligned.
+// See docs/crop_and_concat.md.
 
 // Selects, per batch element, whichever source the phase dictates, and
 // checks the output against it.
@@ -128,7 +55,6 @@ template Concat(batch_size, bit_depth) {
     // than any audio this proves.
     var idx_bits = 40;
 
-    //=== IVC state ===//
     // [hash_a, hash_out, hash_b, idx, len_a]
     //
     // Five wide: three chains, the sample counter, and the split point.
@@ -138,7 +64,6 @@ template Concat(batch_size, bit_depth) {
     signal input step_in[5];
     signal output step_out[5];
 
-    //=== Current Batches ===//
     // Both sources are supplied each step; the phase selects which one
     // the output must equal, and which chain absorbs it.
     signal input a[batch_size];
@@ -156,7 +81,7 @@ template Concat(batch_size, bit_depth) {
     idx <== step_in[3];
     len_a <== step_in[4];
 
-    //=== The boundary must fall on a fold boundary ===//
+    // The boundary must fall on a fold boundary.
     // Otherwise a step would straddle it and the gate would have to be
     // per-sample. The prover supplies the fold count; one constraint
     // pins it.
@@ -164,14 +89,13 @@ template Concat(batch_size, bit_depth) {
     q <-- len_a \ spb;
     len_a === q * spb;
 
-    //=== Phase selector: one comparison per step ===//
+    // Phase selector: one comparison per step, on the counter.
     component in_b = GreaterEqThan(idx_bits);
     in_b.in[0] <== idx;
     in_b.in[1] <== len_a;
     signal phase;
     phase <== in_b.out;
 
-    //=== Batch hashes ===//
     // Each source chain must absorb ITS OWN batch, so both are hashed.
     // The output chain absorbs whichever one the phase selected, which
     // equals `out` by the check below - so no third BatchHasher is
@@ -187,7 +111,7 @@ template Concat(batch_size, bit_depth) {
     picked_batch.c[1] <== b_batch.hash;
     picked_batch.s <== phase;
 
-    //=== Gated source chains ===//
+    // Gated source chains: the unselected one passes through.
     component a_next = Hasher(2);
     a_next.values[0] <== hash_a;
     a_next.values[1] <== a_batch.hash;
@@ -207,7 +131,7 @@ template Concat(batch_size, bit_depth) {
     pick_b.c[1] <== b_next.hash;   // phase 1: absorb
     pick_b.s <== phase;
 
-    //=== Output chain always absorbs ===//
+    // The output chain absorbs every step.
     component out_next = Hasher(2);
     out_next.values[0] <== hash_out;
     out_next.values[1] <== picked_batch.out;
@@ -218,7 +142,6 @@ template Concat(batch_size, bit_depth) {
     step_out[3] <== idx + spb;
     step_out[4] <== len_a;         // carried unchanged
 
-    //=== Verifier Component ===//
     component check = ConcatCheck(batch_size);
     check.a <== a;
     check.b <== b;

@@ -1,53 +1,16 @@
 //! circomlib-compatible Poseidon, generic over the prime field.
 //!
-//! # Why this module exists
+//! Must agree with the circuits digest for digest, since a verifier
+//! recomputes commitments off-circuit and compares them against the
+//! proof's terminal IVC state. Instantiate at the scalar field of Nova's
+//! primary curve, which is what the circuits compile against. See
+//! README.md, "Poseidon parity".
 //!
-//! The Rust reference hash and the Circom circuits must agree digest for
-//! digest, or none of the end-to-end protocol works: the verifier
-//! recomputes a commitment off-circuit and compares it against the
-//! proof's terminal IVC state, so a disagreement is indistinguishable
-//! from a forgery.
+//! Round constants are hex strings decoded into `F` on first use, so one
+//! table serves any field. `constants.rs` is generated from
+//! `circuits/circom/poseidon_constants.circom`.
 //!
-//! They did not agree, and the reason was the **field**, not the
-//! construction:
-//!
-//! | side | field | `Poseidon(2)([1,2])` |
-//! |---|---|---|
-//! | `light-poseidon` + `ark_bn254::Fr` | BN254 scalar | `7853200120776062878684798364095072458815029376092732009249414926327459813530` |
-//! | circom `--prime vesta` | Vesta base | `10148246943864975455840209516398831844995242484352636702637979101131422116154` |
-//!
-//! The circuits are compiled `--prime vesta` because `circuit.rs` folds
-//! with `PallasEngine` as the primary curve, and a Nova step circuit lives
-//! over the primary curve's *scalar* field - which is exactly
-//! `halo2curves::pasta::fq::Fq`, modulus
-//! `0x40000000000000000000000000000000224698fc0994a8dd8c46eb2100000001`.
-//! That is the Vesta prime. So the field choice is forced by the curve
-//! cycle, and it was the BN254 Rust helper that was wrong.
-//!
-//! No crate fixes this. `light-poseidon` is hard-wired to BN254
-//! parameters, and `neptune` is absent from the tree at `nova-snark` 0.76
-//! and implements a different construction that would not match even on
-//! the right field. Hence this port.
-//!
-//! # Why the port matches
-//!
-//! circomlib's Poseidon is a parameterised permutation whose round
-//! constants are **literal hex** in `poseidon_constants.circom`. Circom
-//! reinterprets those literals modulo whatever prime it compiles against;
-//! the structure around them - `Ark`, `Sigma` (x^5), `Mix`/`MixS`/
-//! `MixLast`, `nRoundsF = 8`, the `N_ROUNDS_P` table, `initialState = 0` -
-//! is field-agnostic. Read the same constants, run the same rounds, change
-//! only the modulus, and the digest follows. So this is generic over
-//! `ff::PrimeField` and instantiating it at a different field reproduces
-//! that field's circom output, BN254 included.
-//!
-//! Verified against real circom witnesses; see `tests/poseidon_parity.rs`.
-//!
-//! # Scope
-//!
-//! This is a reference implementation for the off-circuit side of the
-//! protocol, not a hot path, and it is not constant-time. Do not use it to
-//! hash secrets where timing is observable.
+//! Reference implementation, not a hot path, and not constant-time.
 
 pub mod constants;
 
@@ -73,21 +36,12 @@ struct Params<F> {
 
 /// Decodes one big-endian hex constant into `F`.
 ///
-/// This is the step that makes the table field-agnostic: the same string
-/// becomes a different field element depending on `F`, mirroring how
-/// circom reinterprets the literal under `--prime`.
-///
-/// Reduces modulo the field characteristic rather than requiring the value
-/// to already be in range, because a circomlib constant is only
-/// canonically reduced for the field it was generated over (BN254). Under
-/// a larger prime such as Vesta every constant happens to be in range, but
-/// relying on that would make the generic claim false for any field
-/// smaller than BN254.
+/// Reduces mod the characteristic: circomlib's constants are canonically
+/// reduced only for BN254, so a smaller field needs the reduction.
 fn decode<F: PrimeField>(hex_be: &str) -> F {
     let bytes = hex::decode(hex_be).expect("generated constant is not valid hex");
 
-    // Horner over bytes: val = val * 256 + byte. Avoids needing a
-    // from_be_bytes_mod_order, which `ff::PrimeField` does not provide.
+    // Horner over bytes; `ff::PrimeField` has no from_be_bytes_mod_order.
     let base = F::from(256u64);
     let mut acc = F::ZERO;
     for b in bytes {
@@ -96,17 +50,11 @@ fn decode<F: PrimeField>(hex_be: &str) -> F {
     acc
 }
 
-/// Per-field, per-width constant cache.
+/// Decoded constants for width `t`, built once per `(field, t)`.
 ///
-/// Decoding one width is a few hundred to a few thousand field
-/// conversions, and a running commitment calls the permutation once per
-/// batch, so the tables are decoded on first use and shared thereafter.
-///
-/// Rust has no generic `static`, so the cache is a type-erased map keyed
-/// by the concrete field type. Values are `Arc<Params<F>>` boxed as
-/// `dyn Any + Send + Sync`; the key guarantees each entry is only ever
-/// downcast back to the type it was inserted as, so the downcast cannot
-/// fail and no `unsafe` is needed.
+/// Rust has no generic `static`, so the cache is keyed by `TypeId`. The key
+/// pins the field type, so each entry only ever downcasts back to the type
+/// it was inserted as.
 fn params<F: PrimeField>(t: usize) -> Arc<Params<F>> {
     assert!(
         (MIN_T..=MAX_T).contains(&t),
@@ -164,11 +112,8 @@ fn sigma<F: PrimeField>(x: F) -> F {
 
 /// circomlib's `Mix`: `out[i] = sum_j mat[j][i] * state[j]`.
 ///
-/// Note the index order - the matrix is applied **transposed** relative to
-/// the usual `row * vector` convention. This follows `Mix` in
-/// `poseidon.circom` literally; swapping it silently yields a different
-/// digest, which is precisely the kind of divergence this port exists to
-/// avoid.
+/// Transposed relative to the usual row-times-vector order. Swapping the
+/// indices compiles and yields a different digest.
 fn mix<F: PrimeField>(state: &[F], mat: &[F], t: usize) -> Vec<F> {
     (0..t)
         .map(|i| {
@@ -194,11 +139,6 @@ pub fn poseidon<F: PrimeField>(inputs: &[F]) -> F {
 }
 
 /// `PoseidonEx` with an explicit `initialState`, returning one output.
-///
-/// The circuits here only ever use `initialState = 0` (via `Poseidon`),
-/// but the parameter is what distinguishes the compression function from
-/// the hash, so it is exposed for the sponge in [`sponge_batch_hash`] to
-/// be expressible either way.
 pub fn poseidon_with_state<F: PrimeField>(inputs: &[F], initial_state: F) -> F {
     let n = inputs.len();
     assert!(n > 0, "Poseidon needs at least one input");
@@ -279,20 +219,12 @@ pub fn poseidon_with_state<F: PrimeField>(inputs: &[F], initial_state: F) -> F {
     out
 }
 
-/// Sponge-mode batch digest: the Rust mirror of `SpongeBatchHasher(width,
-/// rate)` in `circuits/hasher_sponge.circom`.
+/// Mirrors `SpongeBatchHasher(width, rate)` in `hasher_sponge.circom`.
 ///
-/// Capacity-1 chain: each permutation absorbs `rate` elements alongside the
-/// running state, `Poseidon(rate + 1)` per group, state starting at zero.
-/// The final partial group is zero-padded, which is unambiguous because
-/// `width` and `rate` are compile-time constants in the circuit (so the pad
-/// length is fixed, not prover-chosen).
-///
-/// As the circuit's own note records, this is Merkle-Damgard over
-/// circomlib's fixed-length Poseidon rather than the spec sponge, and its
-/// digest deliberately differs from `BatchHasher`'s arity-2 chain. Matching
-/// the circuit is the whole point, so the construction is copied exactly
-/// rather than improved.
+/// Capacity-1 chain: one `Poseidon(rate + 1)` per group of `rate`
+/// elements, state starting at zero, final group zero-padded. The pad
+/// length is fixed by the circuit's compile-time width, so it is not
+/// prover-chosen.
 pub fn sponge_batch_hash<F: PrimeField>(batch: &[F], rate: usize) -> F {
     assert!(rate > 0, "sponge rate must be positive");
 
@@ -312,32 +244,19 @@ pub fn sponge_batch_hash<F: PrimeField>(batch: &[F], rate: usize) -> F {
     state
 }
 
-/// The rate the production step circuits absorb at: every current
-/// `*_step.circom` uses `SpongeBatchHasher(batch_size, 4)`.
+/// The rate every `*_step.circom` absorbs at.
 pub const SPONGE_RATE: usize = 4;
 
-/// One IVC fold of the running commitment, mirroring the step circuits:
-///
-/// ```text
-/// step_out = Poseidon(2)([step_in, SpongeBatchHasher(batch, 4)])
-/// ```
-///
-/// This is the `Hasher(2)` that every step circuit applies to
-/// `(prev_hash, batch_digest)`.
+/// One IVC fold: `Poseidon(2)([prev, sponge_batch_hash(batch, 4)])`.
 pub fn fold_batch<F: PrimeField>(prev: F, batch: &[F]) -> F {
     poseidon(&[prev, sponge_batch_hash(batch, SPONGE_RATE)])
 }
 
-/// The running commitment over a whole stream, starting from `z0 = 0`.
+/// The running commitment over a stream, folded from `z0 = 0`.
 ///
-/// `batches` must be the SAME partition of the stream the circuit folds
-/// over - one entry per Nova step, each of `batch_size` packed field
-/// elements. The result is what the proof's terminal IVC state should
-/// hold for that stream, so a verifier compares this against
-/// `final_hash_original` / `final_hash_edited`.
-///
-/// Nova is seeded with `z0 = 0` for the hash elements, matching the
-/// circuit's `step_in` on the first fold.
+/// `batches` must be the same partition the circuit folds over: one entry
+/// per Nova step. The result is what the proof's terminal IVC state holds
+/// for that stream.
 pub fn running_commitment<'a, F, I>(batches: I) -> F
 where
     F: PrimeField,
@@ -348,16 +267,8 @@ where
         .fold(F::ZERO, |acc, batch| fold_batch(acc, batch))
 }
 
-/* --- INTEROP WITH THE SERIALIZED CIRCUIT INPUTS --- */
-
-/// Parses one packed element as the circuit's JSON carries it.
-///
-/// `serialized/*.json` stores each packed chunk as `"0x<hex>"` (see
-/// `audio_parser::compress_samples_at`), so a verifier that recomputes a
-/// commitment from those files needs exactly this conversion. Also accepts
-/// bare decimal, which is how circom input JSON is usually written.
-///
-/// Returns `None` if the text parses as neither.
+/// Parses one packed element as `serialized/*.json` carries it: `"0x<hex>"`,
+/// or bare decimal. `None` if it is neither.
 pub fn parse_field_element<F: PrimeField>(s: &str) -> Option<F> {
     let t = s.trim();
     let digits = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"));
@@ -369,10 +280,6 @@ pub fn parse_field_element<F: PrimeField>(s: &str) -> Option<F> {
 }
 
 /// Reduces a big unsigned integer into `F`.
-///
-/// Packed chunks are up to `256 - bit_depth` bits wide, deliberately kept
-/// under the field size by `comp_size_for`, so in practice no reduction
-/// occurs - but going through the modulus keeps the conversion total.
 pub fn from_biguint<F: PrimeField>(v: &num_bigint::BigUint) -> F {
     let base = F::from(256u64);
     let mut acc = F::ZERO;
@@ -382,40 +289,19 @@ pub fn from_biguint<F: PrimeField>(v: &num_bigint::BigUint) -> F {
     acc
 }
 
-/// Renders a field element the way `circuit.rs` renders the terminal IVC
-/// state, i.e. `format!("{:?}")`: `0x` followed by 64 lowercase hex
-/// digits.
-///
-/// Having this here means a recomputed commitment can be compared against
-/// `ProofMetrics::final_hash_original` / `final_hash_edited` as strings,
-/// without the caller depending on how `Debug` happens to be implemented.
+/// Renders a field element as `circuit.rs` renders the terminal IVC state:
+/// `0x` plus 64 lowercase hex digits. Commitments compare as strings.
 pub fn to_hex<F: PrimeField>(f: &F) -> String {
     format!("{f:?}")
 }
 
-/// The arity-2 chained batch digest: the Rust mirror of `BatchHasher(width)`
-/// in `circuits/hasher.circom`.
+/// Mirrors `BatchHasher(width)` in `hasher.circom`.
 ///
-/// Merkle-Damgard over `Poseidon(2)`, seeded with the batch's FIRST element
-/// rather than zero:
+/// Chains `Poseidon(2)` from `batch[0]`, not from zero, so a one-element
+/// batch hashes to itself. That seeding is why this differs from
+/// `sponge_batch_hash` even at rate 1.
 ///
-/// ```text
-/// h = batch[0]
-/// for i in 1..width:  h = Poseidon(2)([h, batch[i]])
-/// ```
-///
-/// That seeding is not an implementation detail - it is why this digest
-/// differs from `sponge_batch_hash`'s even at rate 1, and why a batch of
-/// one element hashes to itself unchanged.
-///
-/// Needed because the two circuit generations hash differently: the
-/// `_baseline` circuits and the legacy `gain2`/`multiplier_*` family use
-/// this chain, while every current `*_step.circom` uses the rate-4 sponge.
-/// A commitment computed with the wrong one is simply a different hash, so
-/// the choice has to follow the circuit - see [`BatchHashKind`].
-///
-/// Panics on an empty batch, which `BatchHasher` cannot represent either
-/// (it instantiates `width - 1` hashers).
+/// Panics on an empty batch, which `BatchHasher` cannot represent either.
 pub fn chain_batch_hash<F: PrimeField>(batch: &[F]) -> F {
     assert!(!batch.is_empty(), "BatchHasher needs at least one element");
     let mut h = batch[0];
@@ -427,33 +313,27 @@ pub fn chain_batch_hash<F: PrimeField>(batch: &[F]) -> F {
 
 /// Which batch-digest construction a circuit uses.
 ///
-/// The repo ships two generations whose digests differ, so a commitment is
-/// only meaningful alongside the construction that produced it. Making this
-/// an explicit parameter rather than a default avoids silently computing
-/// the wrong hash for a circuit - the failure mode that motivated
-/// README.md's "two batch-digest constructions" note in the first place.
+/// The two digests differ, so a commitment is only meaningful alongside the
+/// construction that produced it. Explicit rather than defaulted, so a
+/// caller cannot silently hash a circuit the wrong way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BatchHashKind {
-    /// `SpongeBatchHasher(width, rate)`. Every current `*_step.circom`.
+    /// `SpongeBatchHasher(width, rate)`. Every `*_step.circom`.
     Sponge { rate: usize },
-    /// `BatchHasher(width)`, the arity-2 chain. The `_baseline` circuits
-    /// and the legacy `multiplier_*` (`gain2`) family.
+    /// `BatchHasher(width)`. The `_baseline` and `multiplier_*` circuits.
     Chain,
 }
 
 impl BatchHashKind {
-    /// The construction the current production step circuits use.
+    /// What the current step circuits use.
     pub const PRODUCTION: Self = Self::Sponge { rate: SPONGE_RATE };
 
-    /// Picks the construction from a circuit name as
-    /// `bench::config::circuit_name_for` builds it.
+    /// Picks the construction from a circuit name.
     ///
-    /// The `multiplier_*` stems are the legacy `gain2` family, which
-    /// predates the sponge switch and still hashes with the arity-2 chain.
-    /// Everything else in `circuits/edits/<family>/` is sponge-4.
-    /// `_baseline` circuits also use the chain, but they are compiled to
-    /// the same stems, so a caller proving against `artifacts/` built from
-    /// `circuits/edits/_baseline/` must say so explicitly.
+    /// `multiplier_*` circuits hash with the arity-2 chain; everything in
+    /// `circuits/edits/<family>/` uses sponge-4. `_baseline` circuits also
+    /// use the chain but compile to the same stems, so proving against
+    /// those artefacts needs `Chain` passed explicitly.
     pub fn for_circuit(circuit_name: &str) -> Self {
         if circuit_name.starts_with("multiplier") {
             Self::Chain

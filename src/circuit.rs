@@ -21,9 +21,8 @@ use serde_json::json;
 pub struct MultiplierInput {
     pub original: Vec<Vec<String>>,
     pub edited: Vec<Vec<String>>,
-    /// Second input stream, for multi-input edits such as merge. Absent
-    /// for the single-input edits, so their serialized JSON is unchanged
-    /// and previously generated files stay loadable.
+    /// Second input stream, for multi-input edits such as merge. Omitted
+    /// for single-input edits, so their serialized JSON stays loadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_b: Option<Vec<Vec<String>>>,
 }
@@ -121,7 +120,7 @@ impl ProofMetrics {
 
     /// Peak RSS above the pre-proof baseline, in MB.
     ///
-    /// **Treat this as indicative only.** The baseline is whatever was
+    /// Treat this as indicative only. The baseline is whatever was
     /// resident when this case started, and the allocator does not return
     /// freed pages to the OS between cases, so a case that runs later in a
     /// sweep sees an inflated baseline and reports a smaller delta for

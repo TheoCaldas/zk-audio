@@ -90,7 +90,7 @@ pub fn gain_multiplier(original: &[i16], amount: i8) -> Result<Vec<i16>, &str> {
 /// Attenuates `original` by a factor of `2^m` (m >= 1), i.e. gain
 /// k = 1/2, 1/4, 1/8, ... — about -6dB per step of m.
 ///
-/// Rounding is **floor** (toward negative infinity), via an arithmetic
+/// Rounding is floor (toward negative infinity), via an arithmetic
 /// right shift. This deliberately does NOT match Rust's `/`, which
 /// truncates toward zero: `-7 / 4 == -1` but `-7 >> 2 == -2`. Floor is
 /// what the circuit computes, because it falls out of the bit
@@ -210,7 +210,7 @@ pub fn tremolo(
 /// sample; a boundary falling mid-fold would need a per-sample gate and
 /// cost roughly 3,100 comparisons per step instead of one.
 ///
-/// Unlike merge, concat does **not** commute: swapping the arguments
+/// Unlike merge, concat does not commute: swapping the arguments
 /// yields a different output and a different commitment, so the order is
 /// part of the proven statement.
 ///
@@ -255,7 +255,7 @@ pub fn concat(a: &[i32], b: &[i32], samples_per_step: usize) -> Result<Vec<i32>,
 /// clamping sounds like hard distortion, whereas averaging is a clean
 /// -6 dB mix of each source.
 ///
-/// **Rounding is floor**, matching the circuit's bit truncation, and NOT
+/// Rounding is floor, matching the circuit's bit truncation, and NOT
 /// Rust's `/`, which truncates toward zero. The two disagree for every
 /// odd negative sum, which is common in real audio: a witness built with
 /// `/` instead of `>>` is rejected by the circuit (verified).
@@ -314,7 +314,7 @@ pub fn merge(a: &[i32], b: &[i32], bit_depth: u32) -> Result<Vec<i32>, String> {
 /// source commitments attests that the mix contains exactly those two
 /// streams.
 ///
-/// **Clamping is the common path, not an edge case.** Two full-scale
+/// Clamping is the common path, not an edge case. Two full-scale
 /// signals sum well outside the representable range in both directions
 /// (at 8-bit, -256..254 against -128..127), so saturation fires often on
 /// loud material. Real mixers usually attenuate before summing for this
@@ -366,10 +366,10 @@ pub fn merge_clamped(a: &[i32], b: &[i32], bit_depth: u32) -> Result<Vec<i32>, S
 /// Two constraints the caller must respect, both of which the suite
 /// checks:
 ///
-/// - **`start` must be even for interleaved stereo**, or the channels
+/// - `start` must be even for interleaved stereo, or the channels
 ///   swap for the remainder of the stream. The circuit cannot detect
 ///   this (it sees a flat sample vector), so it is enforced here.
-/// - **`len` must be a whole number of `B * comp_size`** samples, or the
+/// - `len` must be a whole number of `B * comp_size` samples, or the
 ///   final batch is short and the circuit rejects it.
 ///
 /// # Examples
@@ -431,7 +431,7 @@ pub fn crop(
 /// properties matter for the agreement:
 ///
 /// - Rounding is floor (`>>`), as everywhere else here.
-/// - **Clamping is required**: at `blend = 2^16` the rectified term
+/// - Clamping is required: at `blend = 2^16` the rectified term
 ///   reaches `+half`, one above the representable maximum.
 /// - The integer form deviates from the float reference by at most 0.75
 ///   LSB (worst at d = 0.25), because it floors once at the end rather

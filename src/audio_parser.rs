@@ -184,40 +184,24 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-/// The running Poseidon commitment to a stream, over the field the
-/// circuits actually prove in.
+/// The running Poseidon commitment to a stream.
 ///
-/// Mirrors the step circuits exactly: normalize, pack into field
-/// elements, then per Nova step absorb the step's packed elements with a
-/// rate-4 sponge and fold the digest into the running state with
-/// `Poseidon(2)`, starting from `z0 = 0`. The result is what the proof's
-/// terminal IVC state holds for that stream, so a verifier can compare it
-/// against `ProofMetrics::final_hash_original` / `final_hash_edited`.
+/// Mirrors the step circuits: normalize, pack into field elements, then
+/// per Nova step absorb the step's elements and fold the digest into the
+/// running state, starting from `z0 = 0`. The result is what the proof's
+/// terminal IVC state holds for that stream.
 ///
-/// Takes **signed** samples and `samples_per_step`, the same two things
-/// `serialize_samples_at` takes, and normalizes and chunks them the same
-/// way. Deliberately not "pre-normalized samples plus a batch size": the
-/// commitment has to fold over precisely the partition the circuit folds
-/// over, so sharing the serializer's interface is what keeps the two from
-/// drifting.
+/// Takes signed samples and `samples_per_step`, the same arguments as
+/// `serialize_samples_at`, so both chunk the stream identically.
+/// `samples_per_step` must be a whole number of packed elements and the
+/// stream a whole number of steps; the circuit rejects a short final batch.
 ///
-/// `samples_per_step` must be a whole number of packed elements
-/// (`batch_size * comp_size_for(bit_depth)`), and the stream a whole
-/// number of steps - the circuit rejects a short final batch, so there is
-/// no padding rule to mirror.
-///
-/// `kind` must be the batch-digest construction the target circuit uses:
-/// the current step circuits absorb with a rate-4 sponge, but the legacy
-/// `multiplier_*` (`gain2`) family and the `_baseline` circuits use the
-/// arity-2 chain, and the two digests differ. Use
+/// `kind` must be the construction the target circuit hashes with; use
 /// `BatchHashKind::for_circuit(name)` unless proving against `_baseline`
 /// artefacts.
 ///
-/// Generic over the field so the same reference serves any curve cycle;
-/// instantiate at `<PallasEngine as Engine>::Scalar` for this pipeline.
-/// This was previously computed over BN254 via `light-poseidon`, which
-/// never matched the circuits - see
-/// README.md, "Poseidon parity".
+/// Instantiate `F` at the circuit's proving field:
+/// `<PallasEngine as Engine>::Scalar`. See README.md, "Poseidon parity".
 pub fn stream_commitment<F: ff::PrimeField>(
     samples: &[i32],
     bit_depth: u32,
@@ -576,9 +560,8 @@ mod packing_tests {
         assert_eq!(out, samples);
     }
 
-    /// The generic bit-shift packer must agree byte-for-byte with the
-    /// original 16-bit byte-concatenation packer, or every previously
-    /// generated input file and commitment hash becomes incomparable.
+    /// The two packers must agree byte for byte at 16 bits, or serialized
+    /// inputs and commitments are not comparable between them.
     #[test]
     fn generic_packer_matches_legacy_16bit_packer() {
         let samples: Vec<i16> = (0..60).map(|i| (i * 1091) as i16).collect();

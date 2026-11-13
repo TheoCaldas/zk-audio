@@ -438,7 +438,26 @@ Headline results from the optimisation study:
   scale, not just constraint count.
 - **Rate-4 sponge over the arity-2 chain** — `ceil(B/4)` permutations
   instead of `B-1`: −59 % hashing constraints at B=100, −13.8 % end-to-end
-  prove time.
+  prove time. A tree of arity `a` still needs ~`B/(a-1)` calls because the
+  lower layers must themselves be hashed; a sponge carries the state
+  forward and needs no second layer. Measured at B=100:
+
+  | construction | Poseidon calls | constraints |
+  |---|---|---|
+  | `BatchHasher`, arity-2 chain | 99 | 51,183 |
+  | tree, arity 4 | 35 | 25,760 |
+  | sponge, rate 4 | 25 | 18,400 |
+  | sponge, rate 8 | 13 | 15,223 |
+
+  **Security note.** circomlib's `Poseidon(n)` is a fixed-length hash with
+  a standard-conformant domain tag. Chaining it as `SpongeBatchHasher`
+  does is Merkle–Damgård over that compression function, not the sponge
+  from the Poseidon paper, which has a defined capacity and padding rule.
+  It is collision resistant on the same assumption `BatchHasher` already
+  relies on — that `Poseidon(t)` is a collision-resistant compression
+  function — and the input length is fixed at compile time, so there is no
+  padding ambiguity. It is not interchangeable with a spec Poseidon
+  sponge.
 - **IVC folding** — proving cost never materialises the whole file's
   constraint system; arbitrary-length audio just means more folds.
 - **Final compression** — `CompressedSNARK` (Spartan + IPA-PC) cost is

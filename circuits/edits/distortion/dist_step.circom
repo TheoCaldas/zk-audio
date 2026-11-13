@@ -1,20 +1,5 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
@@ -28,52 +13,29 @@ include "circom/mux1.circom";
 //
 //     output = d * 2*(|x| - 1/2) + (1 - d) * x          (x in [-1, 1])
 //
-// In integer form at bit depth b, with x in [-half, half-1] and the
-// blend amount d represented as D = round(d * 2^16):
+// In integer form at bit depth b, with x in [-half, half-1] and the blend
+// amount d as D = round(d * 2^16):
 //
 //     edit = clamp( ( D*(2|x| - half) + (2^16 - D)*x ) >> 16 )
 //
-// === Relation to the other edit families ===
+// The most expensive edit here: it needs a sign test for |x| (a comparator
+// plus a mux per sample), a clamp - at d = 1 the rectified term reaches
+// +half, one above the representable maximum - and a wide decomposition
+// per sample.
 //
-// This is the first edit needing BOTH of the hard pieces:
+// D is at scale 2^16, so the rescale is a right shift. Floor rounding; the
+// Rust reference must use `>>`, not `/`. The integer form is not
+// bit-identical to the float reference: maximum deviation is 0.75 LSB at
+// d = 0.25, from the single floor at the end rather than float rounding at
+// every step. Report that figure.
 //
-//   * |x| requires a SIGN TEST - a comparator plus a multiplexer per
-//     sample. `circuits/_old/dist_step.circom` was an abandoned attempt
-//     at exactly this; its sign handling was left commented out and it
-//     hand-rolled a comparator rather than using circomlib's. This file
-//     uses the library primitives and handles the sign completely.
-//   * CLAMPING is required, unlike attenuation and tremolo. At d = 1 the
-//     rectified term reaches +half (+32768 at b=16), one above the
-//     representable maximum, so saturation is not optional. Verified by
-//     enumerating the output range over the full input domain.
-//
-// It is therefore the most expensive edit in the project: a sign test, a
-// clamp, and a wide bit decomposition per sample.
-//
-// === Fixed point and rounding ===
-//
-// D is at scale 2^16, so the rescale is a right shift by 16 rather than a
-// general division - the same reason the scale is a power of two in
-// `atten_step.circom` and `tremolo_step.circom`. Rounding is floor, as
-// everywhere else in this project, because bit truncation computes it
-// natively; the Rust reference must use `>>`, not `/`.
-//
-// The integer form is not bit-identical to the float reference: the
-// maximum deviation is 0.75 LSB (at d = 0.25), from the single floor at
-// the end rather than float rounding at every step. That is below one
-// quantization step and is reported rather than hidden.
-//
-// === Normalized space ===
-//
-// Samples arrive as orig_n = x + half. Writing a = |x|, the circuit
-// evaluates
+// Samples arrive as orig_n = x + half. With a = |x| the circuit evaluates
 //
 //     v = D*(2a - half) + (2^16 - D)*(orig_n - half) + 2^16*half
 //
-// which is non-negative for every (x, D) in range, and from which
-// (v >> 16) - half equals the signed pre-clamp result exactly - the
-// offset cancels, with no correction term. (Verified over the full
-// domain at b in {8, 16} for D across its range.)
+// non-negative for every (x, D) in range, from which (v >> 16) - half is
+// the signed pre-clamp result exactly. Verified over the full domain at
+// b in {8,16} across D's range.
 
 // |x| for a normalized sample, returned as a non-negative magnitude.
 //
@@ -198,17 +160,13 @@ template BatchCheckDistort(batch_size, bit_depth, blend) {
 }
 
 template Distort(batch_size, bit_depth, blend) {
-    //=== Previous Hashes ===//
     signal input step_in[2];   // (prev_orig_hash, prev_edit_hash)
 
-    //=== Next Hashes ===//
     signal output step_out[2];
 
-    //=== Current Batches ===//
     signal input orig[batch_size];
     signal input edit[batch_size];
 
-    //=== Hash Components ===//
     component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
@@ -226,7 +184,6 @@ template Distort(batch_size, bit_depth, blend) {
 
     // Memoryless: distortion is a pointwise function of the sample, so
     // unlike tremolo it needs no sample counter in the IVC state.
-    //=== Verifier Component ===//
     component check = BatchCheckDistort(batch_size, bit_depth, blend);
     check.orig <== orig;
     check.edit <== edit;

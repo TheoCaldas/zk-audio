@@ -1,20 +1,5 @@
 pragma circom 2.1.6;
 
-// ---------------------------------------------------------------------------
-// SPONGE VARIANT (rate 4) - this is the DEFAULT as of the optimisation work.
-//
-// Identical to the baseline step circuit in every respect except how each
-// batch is absorbed into the running commitment: `BatchHasher` chains B-1
-// arity-2 Poseidon calls, `SpongeBatchHasher` uses exactly ceil(B/4)
-// permutations of Poseidon(5). Both running hashes are kept, so the IVC
-// state and the proven relation are unchanged.
-//
-// -59% hashing constraints at B=100; -13.8% prove time end to end.
-//
-// The DIGEST DIFFERS from the baseline's, so commitments produced here do
-// not match pre-optimisation runs. The baseline circuits are preserved
-// under circuits/edits/_baseline/ for reproducing the old numbers.
-// ---------------------------------------------------------------------------
 
 include "hasher.circom";
 include "hasher_sponge.circom";
@@ -28,73 +13,20 @@ include "tremolo_table.circom";
 //
 //     edit_i = floor( orig_i * L(i) / 2^16 )
 //
-// where L(i) in [0, 2^16] is a unipolar sine LFO sampled at position i.
+// where L(i) in [0, 2^16] is a unipolar sine LFO at scale 2^16, so the
+// rescale is a right shift. Floor rounding; the Rust reference must use
+// `>>`, not `/`.
 //
-// === Naming ===
+// The first edit needing a notion of time: the IVC state carries a proven
+// sample counter, advanced one batch per step, so the LFO phase cannot be
+// shifted without breaking the chain.
 //
-// The reference implementation (source_outputs/"pitch shifting 2.c") is
-// titled "pitch shifting" but its own comments describe, and its code
-// computes, a TREMOLO: `output = input * lfo`, which modulates amplitude,
-// not pitch. True pitch shifting requires resampling or a phase vocoder,
-// neither of which is expressible at reasonable cost here. This circuit
-// is named for what it actually proves.
+// L <= 2^16 means |orig*L/2^16| <= |orig|, so no clamp is needed. L is
+// looked up once per packed element, not per sample, which keeps the cost
+// in line with gain at an inaudible approximation.
 //
-// === Why this is the first edit needing a notion of time ===
-//
-// Gain and attenuation are memoryless: edit_i depends only on orig_i. A
-// tremolo depends on the sample's absolute POSITION in the stream, so the
-// circuit must know where each batch sits. The IVC state is therefore
-// extended with a sample counter:
-//
-//     step_in  = [orig_hash, edit_hash, sample_index]
-//     step_out = [orig_hash', edit_hash', sample_index + batch_size*comp_size]
-//
-// The counter is proven, not supplied: each step advances it by exactly
-// one batch's worth of samples, and the verifier sees the final value,
-// which must equal N. A prover cannot shift the LFO phase to flatter the
-// signal without breaking the chain.
-//
-// === Fixed point ===
-//
-// L is an integer in [0, 2^16] representing a gain in [0, 1] at a scale
-// of 2^16. The post-multiply rescale is therefore a right shift by 16,
-// not a general division - the same trick the attenuation circuit uses,
-// and the reason the scale is a power of two.
-//
-// Floor rounding, as in `atten_step.circom`, because bit truncation
-// computes it natively. The off-circuit reference must use `>>`, not `/`.
-//
-// === No clamping needed ===
-//
-// Because L <= 2^16, the product satisfies |orig*L/2^16| <= |orig|, so
-// the result is always representable at the source depth. Like
-// attenuation and unlike gain, this circuit needs no saturation logic -
-// verified exhaustively against the Rust reference.
-//
-// === The normalized-space formulation ===
-//
-// Samples arrive normalized as orig_n = orig + half. The product orig*L
-// is signed, which the field cannot represent directly, so the circuit
-// works with
-//
-//     u = orig_n * L + (2^16 - L) * half   =   orig*L + half*2^16   >=  0
-//
-// from which floor(u / 2^16) = floor(orig*L / 2^16) + half = edit_n
-// exactly, with no correction term. (Verified for every input at
-// bit_depth in {8,16} across the full range of L.)
-//
-// === Piecewise-constant LFO ===
-//
-// L is looked up ONCE PER PACKED ELEMENT (comp_size samples), not per
-// sample. A 256-entry lookup costs ~256 constraints, so a per-sample
-// lookup would make this circuit ~3x the cost of gain; amortizing it over
-// comp_size samples brings it back in line.
-//
-// The approximation is inaudible: at 44.1kHz with comp_size=15 the LFO
-// updates at 2940Hz against a 5Hz modulation (588x oversampled), and the
-// worst amplitude step between adjacent blocks is 0.046dB - well under
-// the ~1dB difference limen. At comp_size=31 (bit_depth=8) it is 0.095dB.
-// Both are reported in the thesis rather than claimed to be exact.
+// See docs/tremolo.md for the normalized-space derivation and the
+// quantified LFO-quantisation figures to report.
 
 // Selects LFO value L for a block whose first sample is at absolute
 // index `idx`, from a TABLE_N-entry table covering one LFO period of
@@ -243,15 +175,13 @@ template Tremolo(batch_size, bit_depth, period, table_n) {
     // instead of 9, which circom then rejects as an array size.
     var comp_size = (256 - bit_depth) \ bit_depth;
 
-    //=== IVC state: two hashes PLUS the sample counter ===//
+    // Third state element: the sample counter.
     signal input step_in[3];   // (prev_orig_hash, prev_edit_hash, sample_index)
     signal output step_out[3];
 
-    //=== Current Batches ===//
     signal input orig[batch_size];
     signal input edit[batch_size];
 
-    //=== Hash Components ===//
     component orig_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component edit_batch_hasher = SpongeBatchHasher(batch_size, 4);
     component orig_hasher = Hasher(2);
@@ -272,7 +202,6 @@ template Tremolo(batch_size, bit_depth, period, table_n) {
     // this batch sits, and the verifier checks the final counter == N.
     step_out[2] <== step_in[2] + batch_size * comp_size;
 
-    //=== Verifier Component ===//
     component check = BatchCheckTremolo(batch_size, bit_depth, period, table_n);
     check.orig <== orig;
     check.edit <== edit;
