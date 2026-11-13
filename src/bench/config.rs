@@ -508,8 +508,9 @@ pub fn registry() -> Vec<EditSpec> {
         },
     ]
     // Not yet available: `distortion` (dist_step.circom unfinished, sign
-    // handling commented out) and `pitch_shifter` (floating point, needs a
-    // fixed-point redesign before it maps to a field relation).
+    // handling commented out). A floating-point pitch shifter was removed
+    // rather than kept as dead code: it needs a fixed-point redesign
+    // before it maps to a field relation at all.
 }
 
 pub fn find_edit(name: &str) -> Option<EditSpec> {

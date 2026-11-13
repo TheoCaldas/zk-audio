@@ -7,10 +7,6 @@ use serde_json::json;
 use sha2::{Sha256, Digest};
 use num_bigint::BigUint;
 
-use ark_bn254::Fr;
-use ark_ff::{PrimeField, BigInteger};
-use light_poseidon::{Poseidon, PoseidonHasher, parameters::bn254_x5};
-
 use crate::circuit::MultiplierInput;
 
 pub type WaveSampleFormat = SampleFormat;
@@ -75,6 +71,18 @@ pub fn read_samples_signed(filepath: &str) -> (Vec<i32>, u32) {
     let bits = reader.spec().bits_per_sample as u32;
     let samples: Vec<i32> = reader.samples::<i32>().flatten().collect();
     (samples, bits)
+}
+
+/// Sample rate and channel count of a WAV file on disk.
+///
+/// `read_samples_signed` returns only the samples and bit depth, but
+/// writing an edited stream back out needs the rate and channel layout
+/// too. Reading them from the source means the output inherits the
+/// input's format instead of assuming 44.1 kHz stereo.
+pub fn read_rate_and_channels(filepath: &str) -> (u32, u16) {
+    let reader = WavReader::open(filepath).expect("Failed opening WAVE file");
+    let spec = reader.spec();
+    (spec.sample_rate, spec.channels)
 }
 
 /// Writes a WAV file at an arbitrary supported bit depth, applying the
@@ -176,46 +184,87 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-pub fn poseidon_hash_samples(samples: &[i16]) -> Fr {
-    let mut h = Fr::from(0u64);
-    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
+/// The running Poseidon commitment to a stream, over the field the
+/// circuits actually prove in.
+///
+/// Mirrors the step circuits exactly: normalize, pack into field
+/// elements, then per Nova step absorb the step's packed elements with a
+/// rate-4 sponge and fold the digest into the running state with
+/// `Poseidon(2)`, starting from `z0 = 0`. The result is what the proof's
+/// terminal IVC state holds for that stream, so a verifier can compare it
+/// against `ProofMetrics::final_hash_original` / `final_hash_edited`.
+///
+/// Takes **signed** samples and `samples_per_step`, the same two things
+/// `serialize_samples_at` takes, and normalizes and chunks them the same
+/// way. Deliberately not "pre-normalized samples plus a batch size": the
+/// commitment has to fold over precisely the partition the circuit folds
+/// over, so sharing the serializer's interface is what keeps the two from
+/// drifting.
+///
+/// `samples_per_step` must be a whole number of packed elements
+/// (`batch_size * comp_size_for(bit_depth)`), and the stream a whole
+/// number of steps - the circuit rejects a short final batch, so there is
+/// no padding rule to mirror.
+///
+/// `kind` must be the batch-digest construction the target circuit uses:
+/// the current step circuits absorb with a rate-4 sponge, but the legacy
+/// `multiplier_*` (`gain2`) family and the `_baseline` circuits use the
+/// arity-2 chain, and the two digests differ. Use
+/// `BatchHashKind::for_circuit(name)` unless proving against `_baseline`
+/// artefacts.
+///
+/// Generic over the field so the same reference serves any curve cycle;
+/// instantiate at `<PallasEngine as Engine>::Scalar` for this pipeline.
+/// This was previously computed over BN254 via `light-poseidon`, which
+/// never matched the circuits - see
+/// README.md, "Poseidon parity".
+pub fn stream_commitment<F: ff::PrimeField>(
+    samples: &[i32],
+    bit_depth: u32,
+    samples_per_step: usize,
+    kind: crate::poseidon::BatchHashKind,
+) -> F {
+    let comp = comp_size_for(bit_depth);
+    assert!(
+        samples_per_step % comp == 0,
+        "samples_per_step {} is not a multiple of comp_size {} at bit depth {}",
+        samples_per_step,
+        comp,
+        bit_depth,
+    );
+    assert!(
+        !samples.is_empty() && samples.len() % samples_per_step == 0,
+        "{} samples is not a whole number of {}-sample steps",
+        samples.len(),
+        samples_per_step,
+    );
 
-    for &sample in samples {
-        h = poseidon
-            .hash(&[
-                h,
-                Fr::from(u64::from(sample as u16)),
-            ])
-            .unwrap();
+    // Chunk FIRST, then normalize and pack per chunk, exactly as
+    // `serialize_samples_at` does, so the element boundaries line up with
+    // the JSON the circuit is fed.
+    let mut acc = F::ZERO;
+    for step in samples.chunks(samples_per_step) {
+        let packed = compress_samples_bigint_at(&normalize_samples_at(step, bit_depth), bit_depth);
+        let batch: Vec<F> = packed.iter().map(crate::poseidon::from_biguint).collect();
+        acc = crate::poseidon::fold_batch_with(acc, &batch, kind);
     }
-    h
+    acc
 }
 
-pub fn poseidon_hash_chunks(chunks: &[BigUint]) -> Fr {
-    assert!(!chunks.is_empty());
-    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
-    let mut h = poseidon.hash(&[
-        Fr::from_le_bytes_mod_order(&chunks[0].to_bytes_le()),
-        Fr::from_le_bytes_mod_order(&chunks[1].to_bytes_le()),
-    ]).unwrap();
-
-    for chunk in &chunks[2..] {
-        let chunk_fr = Fr::from_le_bytes_mod_order(&chunk.to_bytes_le());
-        h = poseidon.hash(&[h, chunk_fr]).unwrap();
-    }
-    h
-}
-
-pub fn hex_poseidon_hash_samples(samples: &[i16]) -> String {
-    let hash = poseidon_hash_samples(samples);
-    let s = format!("0x{:x}", BigUint::from_bytes_le(&hash.into_bigint().to_bytes_le()));
-    s
-}
-
-pub fn hex_poseidon_hash_chunks(chunks: &[BigUint]) -> String {
-    let hash = poseidon_hash_chunks(chunks);
-    let s = format!("0x{:x}", BigUint::from_bytes_le(&hash.into_bigint().to_bytes_le()));
-    s
+/// `stream_commitment` rendered the way `circuit.rs` renders the terminal
+/// IVC state, for direct string comparison against a `ProofMetrics` field.
+pub fn hex_stream_commitment<F: ff::PrimeField>(
+    samples: &[i32],
+    bit_depth: u32,
+    samples_per_step: usize,
+    kind: crate::poseidon::BatchHashKind,
+) -> String {
+    crate::poseidon::to_hex(&stream_commitment::<F>(
+        samples,
+        bit_depth,
+        samples_per_step,
+        kind,
+    ))
 }
 
 /* --- SERIALIZE OPERATIONS --- */

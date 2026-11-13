@@ -4,7 +4,7 @@
     "main": "index.js",
     "license": "MIT",
     "dependencies": {
-        "circomlib": "2.0.2",
+        "circomlib": "2.0.5",
         "circomlibjs": "^0.1.7"
     }
 }

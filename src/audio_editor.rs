@@ -483,23 +483,6 @@ pub fn distortion(original: &[i16]) -> Vec<i16> {
     edited
 }
 
-/// Applies a distortion effect to the original audio samples.
-pub fn pitch_shifter(original: &[i16], knob: f32, sample_rate: f32) -> Vec<i16> {
-    let mut edited = Vec::with_capacity(original.len());
-    for (i, &sample) in original.iter().enumerate() {
-        edited.push(lfo_float(sample, knob, (i as f32) / sample_rate));
-    }
-    edited
-}
-
-/// Applies a low-frequency oscillator (LFO) effect to the original audio samples.
-fn lfo_float(sample: i16, knob: f32, time: f32) -> i16 {
-    let freq = knob * 1000.0;
-    let lfo = (std::f32::consts::PI * freq * time).sin();
-    let output = sample as f32 * lfo;
-    clamp_i16(output as i32)
-}
-
 /// Clamps an i32/i64 value to the range of i16 to prevent overflow.
 fn clamp_i16<T>(value: T) -> i16
 where

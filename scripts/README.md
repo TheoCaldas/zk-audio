@@ -57,6 +57,7 @@ materially easier workload.
 | script | output | notes |
 |---|---|---|
 | `gen_lfo_table.py` | `circuits/edits/tremolo/tremolo_table.circom` and `src/lfo_table.rs` | The tremolo LFO as a 256-entry lookup table, emitted for **both** sides so the circuit and the Rust reference cannot drift. Re-run after changing the table size or waveform. |
+| `gen_poseidon_constants.py` | `src/poseidon/constants.rs` | circomlib's Poseidon round constants, transcribed from `circuits/circom/poseidon_constants.circom` so the Rust reference hash and the circuits cannot drift. Emitted as **hex strings, not limbs**: circom reinterprets each literal modulo whichever `--prime` it is given, and keeping them undecoded lets one table serve any field - which is what makes the Rust side match `--prime vesta`. Asserts every table length and exits non-zero on mismatch. Re-run after a circomlib upgrade. |
 | `gen_circuit_index.py` | `circuits/CIRCUIT_INDEX.md` (stdout) | Maps every `circuit_name` in `logs/bench/` to the file that produced it (`circuits/edits/_baseline/…`) and the file carrying that name today. Needed because the sponge switch changed the commitment digest, so an old `circuit_name` no longer denotes the circuit at that path. |
 
 ```bash
