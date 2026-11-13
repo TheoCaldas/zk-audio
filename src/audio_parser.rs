@@ -111,6 +111,16 @@ pub fn write_file_at(
         }
     }
 
+    // A stereo stream ends on a frame, so an odd sample count would leave
+    // hound with half a frame and fail only at finalize, far from here.
+    assert_eq!(
+        samples.len() % spec.channels as usize,
+        0,
+        "{} samples is not a whole number of {}-channel frames",
+        samples.len(),
+        spec.channels,
+    );
+
     let writer = BufWriter::new(fs::File::create(filepath).expect("Failed creating WAVE file"));
     let mut wav_writer = WavWriter::new(writer, spec).expect("Failed writing WAVE specs to file");
 
@@ -184,6 +194,31 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+/// The fold-aligned length `n` samples are proven at: `n` rounded up to
+/// a whole number of `samples_per_step` steps.
+///
+/// A compiled circuit folds a fixed-width step, so a stream that is not a
+/// whole number of steps has no proof unless it is extended to one.
+pub fn padded_len(n: usize, samples_per_step: usize) -> usize {
+    assert!(samples_per_step > 0, "samples_per_step must be > 0");
+    n.div_ceil(samples_per_step) * samples_per_step
+}
+
+/// Extends a signed stream with silence to `padded_len`.
+///
+/// Signed zero, so the pad is silence in the stream's own units at every
+/// bit depth. The edit is applied to the result rather than assumed to fix
+/// the pad: `distort(0)` is `-2^(bd-1)/2`, not 0, so an edited stream
+/// padded with zeros would not satisfy the relation.
+///
+/// The true length is not recoverable from the padded stream, so it is
+/// part of the signed statement; see `protocol::commitment_statement`.
+pub fn pad_to_step(samples: &[i32], samples_per_step: usize) -> Vec<i32> {
+    let mut out = samples.to_vec();
+    out.resize(padded_len(samples.len(), samples_per_step), 0);
+    out
+}
+
 /// The running Poseidon commitment to a stream.
 ///
 /// Mirrors the step circuits: normalize, pack into field elements, then
@@ -193,8 +228,10 @@ pub fn hash_samples(samples: &Vec<i16>) -> Vec<u8> {
 ///
 /// Takes signed samples and `samples_per_step`, the same arguments as
 /// `serialize_samples_at`, so both chunk the stream identically.
-/// `samples_per_step` must be a whole number of packed elements and the
-/// stream a whole number of steps; the circuit rejects a short final batch.
+/// `samples_per_step` must be a whole number of packed elements. A stream
+/// that is not a whole number of steps is silence-padded to one, so the
+/// commitment covers `padded_len(samples.len(), samples_per_step)` samples
+/// and the true length must be bound separately.
 ///
 /// `kind` must be the construction the target circuit hashes with; use
 /// `BatchHashKind::for_circuit(name)` unless proving against `_baseline`
@@ -216,12 +253,9 @@ pub fn stream_commitment<F: ff::PrimeField>(
         comp,
         bit_depth,
     );
-    assert!(
-        !samples.is_empty() && samples.len() % samples_per_step == 0,
-        "{} samples is not a whole number of {}-sample steps",
-        samples.len(),
-        samples_per_step,
-    );
+    assert!(!samples.is_empty(), "cannot commit to an empty stream");
+    let padded = pad_to_step(samples, samples_per_step);
+    let samples: &[i32] = &padded;
 
     // Chunk FIRST, then normalize and pack per chunk, exactly as
     // `serialize_samples_at` does, so the element boundaries line up with
@@ -355,7 +389,8 @@ pub fn serialize_merge_at(
     filepath: &str,
 ) {
     let batch = |src: &[i32]| -> Vec<Vec<String>> {
-        src.chunks(batch_size)
+        pad_to_step(src, batch_size)
+            .chunks(batch_size)
             .map(|c| compress_samples_at(&normalize_samples_at(c, bit_depth), bit_depth))
             .collect()
     };
@@ -382,6 +417,10 @@ pub fn serialize_samples_at(
     bit_depth: u32,
     filepath: &str,
 ) {
+    // Pad to whole steps, matching `stream_commitment`: the circuit folds a
+    // fixed-width step, so a short final batch has no witness.
+    let original = pad_to_step(original, batch_size);
+    let edited = pad_to_step(edited, batch_size);
     let mut batched_original = Vec::new();
     for batch in original.chunks(batch_size) {
         batched_original.push(compress_samples_at(
@@ -626,5 +665,63 @@ mod packing_tests {
     #[should_panic(expected = "not a normalized")]
     fn packer_rejects_value_above_depth() {
         compress_samples_bigint_at(&[256], 8);
+    }
+
+    #[test]
+    fn padded_len_rounds_up_to_whole_steps() {
+        assert_eq!(padded_len(310, 310), 310);
+        assert_eq!(padded_len(1, 310), 310);
+        assert_eq!(padded_len(311, 310), 620);
+        assert_eq!(padded_len(619, 310), 620);
+        assert_eq!(padded_len(620, 310), 620);
+    }
+
+    #[test]
+    fn pad_to_step_appends_silence_and_leaves_whole_streams_alone() {
+        assert_eq!(pad_to_step(&[1, -2, 3], 4), vec![1, -2, 3, 0]);
+        assert_eq!(pad_to_step(&[1, -2, 3, -4], 4), vec![1, -2, 3, -4]);
+        assert_eq!(pad_to_step(&[1], 4).len(), 4);
+    }
+
+    /// The pad is signed zero, which normalizes to the midpoint rather
+    /// than to 0, so a padded element is not the unpadded one zero-filled.
+    #[test]
+    fn padding_normalizes_to_the_midpoint_not_to_zero() {
+        let packed = compress_samples_bigint_at(&normalize_samples_at(&pad_to_step(&[0], 2), 8), 8);
+        assert_eq!(packed.len(), 1);
+        // Two digits of 128 (= 0 + 2^7): 128 + 128*256.
+        assert_eq!(packed[0], BigUint::from(128u32 + 128u32 * 256));
+    }
+
+    /// Padding is applied once, at the same granularity, by both sides, so
+    /// a short stream has a commitment at all.
+    #[test]
+    fn commitment_accepts_a_stream_shorter_than_one_step() {
+        use nova_snark::traits::Engine;
+        type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
+
+        let short = [1i32, -2, 3];
+        let padded = pad_to_step(&short, 62);
+        let a = stream_commitment::<Fq>(&short, 8, 62, crate::poseidon::BatchHashKind::PRODUCTION);
+        let b = stream_commitment::<Fq>(&padded, 8, 62, crate::poseidon::BatchHashKind::PRODUCTION);
+        assert_eq!(a, b, "padding inside the commitment must match padding outside it");
+    }
+
+    /// Two lengths that pad to the same boundary share a commitment, which
+    /// is exactly why the protocol signs the length alongside it.
+    #[test]
+    fn lengths_within_one_step_collide_under_the_commitment() {
+        use nova_snark::traits::Engine;
+        type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
+
+        let kind = crate::poseidon::BatchHashKind::PRODUCTION;
+        let mut longer = vec![5i32; 60];
+        let shorter = longer.clone();
+        longer.push(0);
+        assert_eq!(
+            stream_commitment::<Fq>(&shorter, 8, 62, kind),
+            stream_commitment::<Fq>(&longer, 8, 62, kind),
+            "a trailing silent sample inside the pad is invisible to the commitment"
+        );
     }
 }

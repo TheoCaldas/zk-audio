@@ -571,8 +571,8 @@ pub struct EnvInfo {
 pub fn print_matrix(cases: &[Case]) {
     println!("\nCase matrix ({} cells):\n", cases.len());
     println!(
-        "{:>8} {:>5} {:>10} {:>8}  {}",
-        "N", "B", "samples/st", "iters", "status"
+        "{:>8} {:>8} {:>5} {:>10} {:>8}  {}",
+        "asked", "folded", "B", "samples/st", "iters", "status"
     );
     println!("{}", "-".repeat(72));
     for c in cases {
@@ -580,8 +580,11 @@ pub fn print_matrix(cases: &[Case]) {
             Ok(()) => "run".to_string(),
             Err(r) => format!("skip: {}", r),
         };
+        // Both Ns: a padded cell measures more audio than was asked for,
+        // and the two columns are what say so.
         println!(
-            "{:>8} {:>5} {:>10} {:>8}  {}",
+            "{:>8} {:>8} {:>5} {:>10} {:>8}  {}",
+            c.requested_samples,
             c.total_samples,
             c.batch_size,
             c.samples_per_step(),

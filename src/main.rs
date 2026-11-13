@@ -36,17 +36,11 @@ fn main() {
     let comp_size = comp_size_for(bit_depth);
     let edit = find_edit(edit_name).expect("unknown edit");
 
-    // One batch covers batch_size * comp_size samples; N must be a whole
-    // number of batches or the circuit rejects the short final one.
+    // One batch covers batch_size * comp_size samples. N need not be a
+    // whole number of batches: a short tail is silence-padded to one and
+    // the true N is signed with the commitment.
     let samples_per_step = batch_size * comp_size;
-    assert_eq!(
-        max_size % samples_per_step,
-        0,
-        "N={} is not a multiple of {} samples/step (B={})",
-        max_size,
-        samples_per_step,
-        batch_size
-    );
+    let padded_size = audio_parser::padded_len(max_size, samples_per_step);
 
     // Each family encodes its parameter differently (gain_b16_k3_B100,
     // atten_b8_m1_B100), so use the shared namer.
@@ -68,7 +62,11 @@ fn main() {
         original.len(),
         max_size
     );
-    let original = &original[0..max_size];
+    // The edit runs on the padded stream, so the relation holds on the pad
+    // too; `edit(0)` is not 0 for every edit.
+    let mut original = original[0..max_size].to_vec();
+    original.resize(padded_size, 0);
+    let original = &original[..];
 
     assert!(
         edit.bit_depths.contains(&bit_depth),
@@ -89,7 +87,7 @@ fn main() {
     let edited = (edit.apply)(original, &ctx);
 
     /* Serialize Samples */
-    let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, max_size);
+    let json_input_filepath = &format!("serialized/{}_N{}.json", circuit_name, padded_size);
     let orig_wide: Vec<i32> = original.to_vec();
     let edit_wide: Vec<i32> = edited.iter().map(|&s| s as i32).collect();
     audio_parser::serialize_samples_at(
@@ -123,16 +121,18 @@ fn main() {
         bit_depth,
         batch_size,
         comp_size,
-        total_samples: max_size,
+        total_samples: padded_size,
         repetition: 0,
     };
 
     /* --- CREATOR: commit, sign, prove --- */
     println!();
     println!("=== Creator: commit -> sign -> prove ===");
+    // Unpadded: `create_provenance` pads to commit and signs the true
+    // length alongside the commitment.
     let prov = protocol::create_provenance::<Fq>(
-        &orig_wide,
-        &edit_wide,
+        &orig_wide[..max_size],
+        &edit_wide[..max_size],
         bit_depth as u32,
         samples_per_step,
         hash_kind,
@@ -142,7 +142,7 @@ fn main() {
     )
     .expect("creating provenance failed");
 
-    println!("h_orig (signed)   : {}", prov.h_orig);
+    println!("h_orig (signed)   : {} (N={})", prov.h_orig, prov.n_samples);
     println!("h_edit (from proof): {}", prov.h_edit);
 
     /* --- VERIFIER: recompute the edited commitment, check the signature --- */
@@ -150,7 +150,7 @@ fn main() {
     println!();
     println!("=== Verifier: verify proof -> recompute hash -> verify signature ===");
     match protocol::verify_provenance::<Fq>(
-        &edit_wide,
+        &edit_wide[..max_size],
         bit_depth as u32,
         samples_per_step,
         hash_kind,
@@ -167,7 +167,7 @@ fn main() {
                 &format!("raw_audios/output/{}_{}.wav", input_name, edit_name);
             audio_parser::write_file_at(
                 output_filepath,
-                &edit_wide,
+                &edit_wide[..max_size],
                 sample_rate,
                 bit_depth as u32,
                 match channels {

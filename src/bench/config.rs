@@ -577,10 +577,6 @@ impl Default for SuiteConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum SkipReason {
-    /// N smaller than one batch: `chunks()` would emit a single short batch.
-    NTooSmall { samples_per_step: usize },
-    /// N not a multiple of one batch: a short final batch the circuit rejects.
-    NotDivisible { samples_per_step: usize, remainder: usize },
     MissingArtifact { path: String, compile_with: String },
     InsufficientAudio { available: usize, required: usize },
 }
@@ -588,14 +584,6 @@ pub enum SkipReason {
 impl std::fmt::Display for SkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SkipReason::NTooSmall { samples_per_step } => {
-                write!(f, "N < one batch ({} samples/step)", samples_per_step)
-            }
-            SkipReason::NotDivisible { samples_per_step, remainder } => write!(
-                f,
-                "N not divisible by {} samples/step (remainder {})",
-                samples_per_step, remainder
-            ),
             SkipReason::MissingArtifact { path, .. } => write!(f, "missing artifact {}", path),
             SkipReason::InsufficientAudio { available, required } => {
                 write!(f, "audio has {} samples, needs {}", available, required)
@@ -608,7 +596,12 @@ impl std::fmt::Display for SkipReason {
 pub struct Case {
     pub bit_depth: usize,
     pub batch_size: usize,
+    /// Samples actually folded: `requested_samples` padded to a whole
+    /// number of steps. Costs scale with this, not with the request.
     pub total_samples: usize,
+    /// The N this cell was asked for, before padding. Reported so a cell
+    /// whose cost covers more audio than was requested says so.
+    pub requested_samples: usize,
     pub comp_size: usize,
     pub iterations: usize,
     pub circuit_name: String,
@@ -725,20 +718,23 @@ pub fn generate_cases(
             );
             let input_path = format!(
                 "{}/{}_N{}.json",
-                cfg.serialized_dir, circuit_name, n
+                cfg.serialized_dir,
+                circuit_name,
+                crate::audio_parser::padded_len(n, spb)
             );
 
-            let status = if n < spb {
-                Err(SkipReason::NTooSmall { samples_per_step: spb })
-            } else if n % spb != 0 {
-                Err(SkipReason::NotDivisible {
-                    samples_per_step: spb,
-                    remainder: n % spb,
-                })
-            } else if available_samples < n {
+            // A short tail is padded to a whole step rather than skipped,
+            // so every N runs at every B. The padded length is what the
+            // audio must cover and what the cost is reported against.
+            let padded_n = crate::audio_parser::padded_len(n, spb);
+
+            // No NTooSmall any more: an N below one batch pads up to one
+            // and folds a single step, which is a legitimate (if mostly
+            // silent) cell rather than an unprovable one.
+            let status = if available_samples < padded_n {
                 Err(SkipReason::InsufficientAudio {
                     available: available_samples,
-                    required: n,
+                    required: padded_n,
                 })
             } else if !Path::new(&r1cs_path).exists() {
                 Err(SkipReason::MissingArtifact {
@@ -765,9 +761,10 @@ pub fn generate_cases(
             cases.push(Case {
                 bit_depth: cfg.bit_depth,
                 batch_size: b,
-                total_samples: n,
+                total_samples: padded_n,
+                requested_samples: n,
                 comp_size: comp,
-                iterations: if spb > 0 { n / spb } else { 0 },
+                iterations: if spb > 0 { padded_n / spb } else { 0 },
                 circuit_name,
                 r1cs_path,
                 wasm_path,
@@ -867,7 +864,8 @@ mod tests {
     #[test]
     fn requested_durations_divide_the_usable_batch_sizes() {
         // Why these four durations are clean: every one is a whole number of
-        // steps at every usable B, so none of them skip as NotDivisible.
+        // steps at every usable B, so none of them is padded and the
+        // reported N is the N that was asked for.
         let comp = comp_size_for(16);
         for secs in [10.0, 30.0, 60.0, 120.0] {
             let n = samples_for_duration(secs, 44100, 2);
@@ -937,8 +935,8 @@ mod tests {
     #[test]
     fn eight_bit_step_never_divides_the_ladder() {
         // bd=8 packs 31 samples/element, so a B=10 step covers 310 and no
-        // 60*10^k value is a whole number of steps. This is why --n-list
-        // exists.
+        // 60*10^k value is a whole number of steps. These are padded up
+        // rather than skipped; --n-list still avoids paying for the pad.
         let comp = comp_size_for(8);
         assert_eq!(comp, 31);
         for n in n_ladder(600000) {
@@ -947,6 +945,68 @@ mod tests {
         }
     }
 
+    /// The case that used to be skipped: at bd=8 a B=10 step covers 310
+    /// samples and no ladder value divides it, so every cell is padded up
+    /// and runnable instead of refused.
+    #[test]
+    fn ragged_n_is_padded_rather_than_skipped() {
+        let cfg = SuiteConfig {
+            max_n: 6000,
+            bit_depth: 8,
+            batch_sizes: vec![10],
+            artifacts_dir: "artifacts".to_string(),
+            ..Default::default()
+        };
+        let cases = generate_cases(&cfg, 705_600, "gain", Some(2));
+        let spb = 10 * comp_size_for(8);
+
+        for c in &cases {
+            assert_eq!(c.total_samples % spb, 0, "a case must fold whole steps");
+            assert!(
+                c.total_samples >= c.requested_samples,
+                "padding never shortens a request"
+            );
+            assert!(
+                c.total_samples - c.requested_samples < spb,
+                "padding never adds a whole extra step"
+            );
+            assert_eq!(c.iterations, c.total_samples / spb);
+        }
+
+        // N=600 is ragged at 310/step and must now be runnable.
+        let ragged = cases
+            .iter()
+            .find(|c| c.requested_samples == 600)
+            .expect("the ladder includes 600");
+        assert_eq!(ragged.total_samples, 620);
+        assert_eq!(ragged.iterations, 2);
+        assert!(
+            ragged.is_runnable(),
+            "a ragged N must run, got {:?}",
+            ragged.status
+        );
+    }
+
+    /// Two requests that pad to the same boundary fold identical input, so
+    /// they must share a serialized file rather than write two.
+    #[test]
+    fn requests_that_pad_alike_share_one_input_file() {
+        let cfg = SuiteConfig {
+            max_n: 0,
+            bit_depth: 8,
+            batch_sizes: vec![10],
+            n_list: vec![311, 620],
+            artifacts_dir: "artifacts".to_string(),
+            ..Default::default()
+        };
+        let cases = generate_cases(&cfg, 705_600, "gain", Some(2));
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].total_samples, cases[1].total_samples);
+        assert_eq!(cases[0].input_path, cases[1].input_path);
+    }
+
+    /// An N below one batch pads up to a single fold, so it is runnable
+    /// rather than skipped; what remains is a missing artefact.
     #[test]
     fn skips_are_classified() {
         let cfg = SuiteConfig {
@@ -956,16 +1016,16 @@ mod tests {
             ..Default::default()
         };
         let cases = generate_cases(&cfg, 705_600, "multiplier", Some(2));
-        // Ladder is {60, 600}. Below one batch: B=10 at N=60 (150/step), and
-        // B=100 at both N=60 and N=600 (1500/step).
-        let too_small = cases
-            .iter()
-            .filter(|c| matches!(c.status, Err(SkipReason::NTooSmall { .. })))
-            .count();
-        assert_eq!(too_small, 3);
-        // B=10 cells reach the artifact check and fail it.
+        for c in &cases {
+            assert!(
+                c.iterations >= 1,
+                "every cell folds at least one step, got {} at N={}",
+                c.iterations,
+                c.requested_samples
+            );
+        }
         assert!(cases
             .iter()
-            .any(|c| matches!(c.status, Err(SkipReason::MissingArtifact { .. }))));
+            .all(|c| matches!(c.status, Err(SkipReason::MissingArtifact { .. }))));
     }
 }

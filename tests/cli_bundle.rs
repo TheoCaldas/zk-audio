@@ -14,6 +14,7 @@ fn signature_bundle_round_trips() {
         bit_depth: 8,
         batch_size: 10,
         samples: 620,
+        padded_samples: 620,
         source_file: "x.wav".to_string(),
     };
     bundle::write(path, &b).expect("write");
@@ -38,6 +39,7 @@ fn proof_bundle_round_trips() {
         batch_size: 10,
         comp_size: 31,
         samples: 620,
+        padded_samples: 620,
         iterations: 2,
         z0: vec![0, 0],
         h_orig: "0xaa".to_string(),
@@ -135,4 +137,54 @@ fn proof_verifies_against_an_independently_derived_key() {
     let i = bad.len() / 2;
     bad[i] = if bad[i] == b'1' { b'2' } else { b'1' };
     assert!(circuit::verify_compressed(&bad, &vk, metrics.iterations, &[0, 0]).is_err());
+}
+
+/// The padded length is what the proof folds and the true length is what
+/// the signature binds, so a bundle that lost either could not be checked.
+#[test]
+fn bundles_carry_both_lengths() {
+    let path = "/tmp/_zk_padded_test.json";
+    let b = ProofBundle {
+        kind: ProofBundle::KIND.to_string(),
+        circuit_name: "gain_b8_k2_B10".to_string(),
+        edit: "gain_k2".to_string(),
+        bit_depth: 8,
+        batch_size: 10,
+        comp_size: 31,
+        samples: 317,
+        padded_samples: 620,
+        iterations: 2,
+        z0: vec![0, 0],
+        h_orig: "0xaa".to_string(),
+        h_edit: "0xbb".to_string(),
+        proof: serde_json::json!({"stub": true}),
+    };
+    bundle::write(path, &b).expect("write");
+    let back: ProofBundle = bundle::read(path).expect("read");
+    assert_eq!(back.samples, 317, "the true length must survive");
+    assert_eq!(back.padded_samples, 620);
+    assert_eq!(
+        back.iterations,
+        back.padded_samples / (back.batch_size * back.comp_size),
+        "iterations count padded steps, not requested samples"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// A v1 bundle predates the length binding, so it must not deserialize
+/// silently into a v2 one with a zero length.
+#[test]
+fn a_bundle_without_a_padded_length_is_rejected() {
+    let path = "/tmp/_zk_v1_test.json";
+    std::fs::write(
+        path,
+        r#"{"kind":"zk-audio-proof/1","circuit_name":"x","edit":"gain_k2",
+            "bit_depth":8,"batch_size":10,"comp_size":31,"samples":620,
+            "iterations":2,"z0":[0,0],"h_orig":"0xaa","h_edit":"0xbb",
+            "proof":{}}"#,
+    )
+    .unwrap();
+    let r: Result<ProofBundle, _> = bundle::read(path);
+    assert!(r.is_err(), "a v1 bundle must not load as v2");
+    let _ = std::fs::remove_file(path);
 }

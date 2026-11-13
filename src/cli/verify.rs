@@ -8,6 +8,7 @@ use crate::cli::prompt;
 use crate::cli::{fmt_secs, Timer};
 use crate::circuit;
 use crate::poseidon::BatchHashKind;
+use crate::protocol;
 use crate::signer;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
@@ -45,12 +46,25 @@ pub fn run() -> Result<(), String> {
     // failure, not a crash.
     let t_agree = Timer::start();
     let params_agree = sig.bit_depth == proof.bit_depth && sig.batch_size == proof.batch_size;
-    let consistent = sig.h_orig == proof.h_orig && params_agree;
+    // The length is half the signed statement, so a proof about a
+    // different N is about a different statement even at the same h_orig.
+    let lengths_agree = sig.samples == proof.samples;
+    let consistent = sig.h_orig == proof.h_orig && params_agree && lengths_agree;
     checks.push(Check {
         name: "bundles agree",
         ok: consistent,
         detail: if consistent {
-            format!("same h_orig, bd={}, B={}", proof.bit_depth, proof.batch_size)
+            format!(
+                "same h_orig, bd={}, B={}, N={}",
+                proof.bit_depth, proof.batch_size, proof.samples
+            )
+        } else if !lengths_agree && sig.h_orig == proof.h_orig && params_agree {
+            format!(
+                "same h_orig but different lengths: signature says {} samples, proof \
+                 says {}. The length is signed with the commitment, so these are \
+                 different statements.",
+                sig.samples, proof.samples
+            )
         } else if !params_agree {
             format!(
                 "different partitions: signature bd={}/B={}, proof bd={}/B={}. h_orig \
@@ -145,12 +159,15 @@ pub fn run() -> Result<(), String> {
     let samples_per_step = proof.batch_size * proof.comp_size;
     let t_audio = Timer::start();
     let (samples, _bits) = audio_parser::read_samples_signed(&audio_path);
-    let usable = samples.len() / samples_per_step * samples_per_step;
-    let recomputed = if usable == 0 {
+    // Length first: the commitment is over the padded stream, so a file
+    // trimmed inside the last fold recommits to the same value. Only the
+    // signed N rules that out.
+    let length_ok = samples.len() == proof.samples;
+    let recomputed = if !length_ok || samples.is_empty() {
         None
     } else {
         Some(audio_parser::hex_stream_commitment::<Fq>(
-            &samples[..usable],
+            &samples,
             proof.bit_depth as u32,
             samples_per_step,
             BatchHashKind::for_circuit(&proof.circuit_name),
@@ -161,9 +178,18 @@ pub fn run() -> Result<(), String> {
         name: "edited audio",
         ok: audio_ok,
         detail: match &recomputed {
-            Some(h) if audio_ok => format!("recomputed h_edit matches ({} samples)", usable),
+            Some(_) if audio_ok => format!(
+                "recomputed h_edit matches ({} samples, padded to {})",
+                proof.samples, proof.padded_samples
+            ),
             Some(h) => format!("recomputed {h}, expected {}", proof.h_edit),
-            None => "file is shorter than one step".to_string(),
+            None if !length_ok => format!(
+                "the file has {} samples, the proof is about {}. The commitment \
+                 covers the padded stream, so the length is signed separately.",
+                samples.len(),
+                proof.samples
+            ),
+            None => "the file has no samples".to_string(),
         },
         secs: t_audio.secs(),
     });
@@ -175,7 +201,11 @@ pub fn run() -> Result<(), String> {
             .ok()
             .and_then(|d| p256::ecdsa::Signature::from_der(&d).ok())
         {
-            Some(s) => signer::verify_hash(&signer::hash_text(&sig.h_orig), &s, &vk),
+            Some(s) => signer::verify_hash(
+                &protocol::signed_digest(&sig.h_orig, sig.samples),
+                &s,
+                &vk,
+            ),
             None => false,
         },
         Err(_) => false,
@@ -184,7 +214,10 @@ pub fn run() -> Result<(), String> {
         name: "signature",
         ok: sig_ok,
         detail: if sig_ok {
-            "valid over h_orig, using the key in the bundle".to_string()
+            format!(
+                "valid over (h_orig, N={}), using the key in the bundle",
+                sig.samples
+            )
         } else {
             "does not verify".to_string()
         },

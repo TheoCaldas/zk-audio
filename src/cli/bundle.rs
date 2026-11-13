@@ -23,12 +23,19 @@ pub struct SignatureBundle {
     pub public_key_pem: String,
     pub bit_depth: usize,
     pub batch_size: usize,
+    /// True sample count, before padding. Part of the signed statement:
+    /// `h_orig` is over the stream padded to a fold boundary, so the
+    /// commitment alone does not say where the audio ends.
     pub samples: usize,
+    /// What `h_orig` actually folds over: `samples` rounded up to a whole
+    /// number of steps. Derivable from `samples` and the partition, and
+    /// written out so a bundle can be read without recomputing it.
+    pub padded_samples: usize,
     pub source_file: String,
 }
 
 impl SignatureBundle {
-    pub const KIND: &'static str = "zk-audio-signature/1";
+    pub const KIND: &'static str = "zk-audio-signature/2";
 }
 
 /// Written by the prove step. `circuit_name` is what lets the verify step
@@ -41,7 +48,11 @@ pub struct ProofBundle {
     pub bit_depth: usize,
     pub batch_size: usize,
     pub comp_size: usize,
+    /// True sample count, before padding.
     pub samples: usize,
+    /// What the proof folds over: `samples` padded to a fold boundary.
+    /// `iterations` counts these, not `samples`.
+    pub padded_samples: usize,
     /// Fold count, required by `CompressedSNARK::verify`.
     pub iterations: usize,
     /// Initial IVC state, required by `verify` and not always zero: crop
@@ -55,7 +66,7 @@ pub struct ProofBundle {
 }
 
 impl ProofBundle {
-    pub const KIND: &'static str = "zk-audio-proof/1";
+    pub const KIND: &'static str = "zk-audio-proof/2";
 }
 
 pub fn write<T: Serialize>(path: &str, value: &T) -> Result<(), String> {

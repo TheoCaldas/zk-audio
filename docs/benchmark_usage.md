@@ -119,22 +119,27 @@ N always steps `60 → 600 → 6000 → 60000 → …`. You only choose where it
 `--max-n` is **required** — it's the single biggest driver of runtime, so there's
 no default.
 
-### Not every (B, N) pair is valid
+### N is rounded up to whole batches
 
-A case only runs if **N divides evenly into whole batches**, i.e.
-`N % (B × comp_size) == 0`. Otherwise the last batch would be short and the
-circuit rejects it. The skip is reported as `NotDivisible`, with the
-`samples_per_step` it failed against.
+A fold is a fixed-width step, so a case folds
+`ceil(N / (B × comp_size))` batches: an N that does not divide evenly is
+silence-padded up to the next boundary rather than skipped. `total_samples`
+in the results is what was folded and `requested_samples` is what was asked
+for, so a padded cell's cost is reported against the audio it actually
+covers.
 
-So some cells get skipped automatically, and that's expected:
+The matrix prints both, so a padded cell says what it actually measures:
 
 ```
-       N     B samples/st    iters  status
-      60    10        150        0  skip: N < one batch (150 samples/step)
-     600    10        150        4  run
-     600   100       1500        0  skip: N < one batch (1500 samples/step)
-    6000   100       1500        4  run
+   asked   folded     B samples/st    iters  status
+      60      310    10        310        1  run
+      60     3100   100       3100        1  run
+     600      620    10        310        2  run
+    6000     6200    10        310       20  run
 ```
+
+An N below one batch pads up to a single fold and runs; what remains a
+skip is a missing artefact or an input too short to cover the padded N.
 
 `--dry-run` shows you this table before committing to a long run. **Always
 dry-run first.**
@@ -580,9 +585,10 @@ field elements would unpack to the same samples), and every circom site
 computing `comp_size` uses `\` rather than `/`, because field division would
 yield a modular inverse instead of 9.
 
-**The N ladder does not work at 8 bits.** A B=10 step covers 310 samples, and no
-`60 × 10^k` value is a whole number of 310s, so every cell skips as
-`NotDivisible`. Use `--n-list` with explicit multiples instead:
+**The N ladder is ragged at 8 bits.** A B=10 step covers 310 samples, and no
+`60 × 10^k` value is a whole number of 310s, so every cell is padded up and
+measures slightly more audio than its label says. Use `--n-list` with
+explicit multiples when the reported N has to be exact:
 
 ```bash
 ./target/release/bench --n-list 3100,31000 --bit-depth 8 \

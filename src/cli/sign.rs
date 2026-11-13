@@ -8,6 +8,7 @@ use crate::cli::bundle::{self, SignatureBundle};
 use crate::cli::prompt;
 use crate::cli::{newest_key, stem, Timer};
 use crate::poseidon::BatchHashKind;
+use crate::protocol;
 use crate::signer;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
@@ -43,31 +44,28 @@ pub fn run() -> Result<(), String> {
         );
     }
     // Commit to the whole stream: the signer does not know what will later
-    // be proven about it. `stream_commitment` folds whole steps only, so
-    // the tail below a step boundary is dropped.
-    let folds = samples.len() / samples_per_step;
-    if folds == 0 {
-        return Err(format!(
-            "{} samples is less than one step of {samples_per_step}",
-            samples.len()
-        ));
+    // be proven about it. A tail below a step boundary is silence-padded
+    // up to one rather than dropped, and the true length is signed with
+    // the commitment so the padding cannot be reinterpreted.
+    if samples.is_empty() {
+        return Err(format!("{audio} has no samples"));
     }
-    let usable = folds * samples_per_step;
-    if usable < samples.len() {
+    let n_samples = samples.len();
+    let padded_samples = audio_parser::padded_len(n_samples, samples_per_step);
+    let folds = padded_samples / samples_per_step;
+    if padded_samples > n_samples {
         println!(
-            "{} samples: committing to {folds} steps of {samples_per_step} ({} dropped below \
-             the last step boundary)",
-            samples.len(),
-            samples.len() - usable
+            "{n_samples} samples: committing to {folds} steps of {samples_per_step} \
+             ({} padded with silence to the last step boundary)",
+            padded_samples - n_samples
         );
     } else {
-        println!("{} samples = {folds} steps of {samples_per_step}", samples.len());
+        println!("{n_samples} samples = {folds} steps of {samples_per_step}");
     }
-    let samples = &samples[..usable];
 
     let t = Timer::start();
     let h_orig = audio_parser::hex_stream_commitment::<Fq>(
-        samples,
+        &samples,
         bit_depth as u32,
         samples_per_step,
         BatchHashKind::PRODUCTION,
@@ -75,7 +73,7 @@ pub fn run() -> Result<(), String> {
     println!("commitment computed in {}", t.elapsed());
 
     let key = signer::import_key(&key_path);
-    let signature = signer::sign_hash(&signer::hash_text(&h_orig), &key);
+    let signature = signer::sign_hash(&protocol::signed_digest(&h_orig, n_samples), &key);
 
     // Derive the public half from the private key rather than asking for
     // it, so the two cannot disagree.
@@ -97,7 +95,8 @@ pub fn run() -> Result<(), String> {
             public_key_pem,
             bit_depth,
             batch_size,
-            samples: usable,
+            samples: n_samples,
+            padded_samples,
             source_file: audio.clone(),
         },
     )?;

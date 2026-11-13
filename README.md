@@ -31,6 +31,7 @@ both "this edit is correct" and "the original came from the key holder".
 - [Benchmarks](#benchmarks)
 - [Testing](#testing)
 - [Design notes](#design-notes)
+- [Lengths that are not a whole number of folds](#lengths-that-are-not-a-whole-number-of-folds)
 - [Trust model](#trust-model)
 - [Current state and gaps](#current-state-and-gaps)
 
@@ -268,17 +269,19 @@ chain) is kept only as the benchmark baseline.
    line is load-bearing: the current families use the rate-4 sponge, but
    the legacy `multiplier_*` stems use the arity-2 chain. Getting it wrong
    yields a valid-looking but wrong commitment.
-3. **Read and slice** the audio to exactly `max_size` samples, asserting it
-   is a whole number of steps. One step covers `batch_size × comp_size` =
-   100 × 15 = 1,500 samples, so 600,000 samples is **400 folds**.
-4. **Apply the edit** through the registry.
+3. **Read and slice** the audio to exactly `max_size` samples, then pad to
+   a whole number of steps. One step covers `batch_size × comp_size` =
+   100 × 15 = 1,500 samples, so 600,000 samples is **400 folds**; an
+   `max_size` that is not a multiple is silence-padded up to one (see
+   "Lengths that are not a whole number of folds").
+4. **Apply the edit** through the registry, to the *padded* stream.
 5. **Serialize** both streams to `serialized/<circuit>_N<n>.json` as packed
    hex field elements.
 6. **Load the keypair** from `signers/`.
 
 **Then the protocol**, split into two halves deliberately:
 
-- **Creator** — `create_provenance`: commit, sign `SHA256(h_orig)`, prove
+- **Creator** — `create_provenance`: commit, sign `SHA256(h_orig, N)`, prove
   (400 folds + `CompressedSNARK`), and cross-check its own commitment
   against the circuit's terminal state.
 - **Verifier** — `verify_provenance` receives the edited audio, the bundle
@@ -587,6 +590,42 @@ passing silently — which also means a green run proves nothing until
   expensive. The cost is the gap below.
 
 ---
+
+## Lengths that are not a whole number of folds
+
+A compiled circuit folds a fixed-width step: `batch_size × comp_size`
+samples, 1,500 at bd=16/B=100. Nova folds that one shape repeatedly, so a
+stream whose length is not a multiple of it has no witness for its final,
+short batch.
+
+The stream is **silence-padded** up to the next fold boundary, and the true
+sample count `N` is signed alongside the commitment.
+
+**Why the edit runs on the padded stream, not the other way round.** The
+relation is enforced on every sample the circuit folds, the pad included,
+so the padded original is edited and the result is what the proof is about.
+Padding both streams with zeros instead would be wrong for any edit whose
+`edit(0)` is not `0` — `distort(0)` is `-2^(bd-1)/2`, so a zero-padded
+edited stream violates the relation and the circuit rejects it.
+
+**Why `N` is signed.** The commitment covers the padded stream, so every
+length in `(N_padded - samples_per_step, N_padded]` shares a commitment.
+Trimming the published file inside that window changes nothing a verifier
+could recompute. The signature is therefore over
+`"zk-audio/1|" + h_orig + "|" + N` (`protocol::commitment_statement`), and
+the verifier checks the published length against it before anything else.
+`tests/protocol_end_to_end.rs` pins exactly that attack:
+`truncating_inside_the_pad_is_caught_by_the_length` asserts the trimmed
+stream still recomputes to `h_edit`, and that verification rejects it
+anyway.
+
+**What the published artefact holds.** The WAV carries `N` samples; the
+padding exists only inside the commitment and the witness. A stereo stream
+must still end on a frame, so `N` has to be a multiple of the channel
+count — `write_file_at` asserts it.
+
+**The protocol establishes**: "these `N` samples, silence-extended to a
+fold boundary, are the sanctioned edit of a stream committed as `h_orig`."
 
 ## Trust model
 

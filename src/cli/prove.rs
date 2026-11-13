@@ -145,31 +145,40 @@ pub fn run() -> Result<(), String> {
         (0, Vec::new())
     };
 
-    // Offer a cap: the whole file is often far more proving than wanted,
-    // and a fold is the smallest unit that can be proven.
+    // Offer a cap: the whole file is often far more proving than wanted.
+    // The choice is in samples; a tail below a step boundary is padded up
+    // to one rather than refused.
     let available = samples.len().saturating_sub(window_start);
-    let max_folds = available / samples_per_step;
-    if max_folds == 0 {
-        return Err(format!(
-            "{available} samples from offset {window_start} is less than one step of \
-             {samples_per_step}"
-        ));
+    if available == 0 {
+        return Err(format!("no samples at or after offset {window_start}"));
     }
-    // A step is the smallest provable unit, so the choice is in steps.
+    let max_folds = audio_parser::padded_len(available, samples_per_step) / samples_per_step;
     println!(
-        "{available} samples available = up to {max_folds} steps of {samples_per_step} samples"
+        "{available} samples available = {max_folds} steps of {samples_per_step} samples \
+         once padded"
     );
-    let folds = loop {
-        let f = prompt::usize_or("how many steps to prove", max_folds).ok_or("cancelled")?;
-        if f >= 1 && f <= max_folds {
-            break f;
+    let n_samples = loop {
+        let n = prompt::usize_or("how many samples to prove", available).ok_or("cancelled")?;
+        if n >= 1 && n <= available {
+            break n;
         }
-        println!("  enter 1-{max_folds}");
+        println!("  enter 1-{available}");
     };
-    let available = folds * samples_per_step;
-    let usable = available;
-    let original: Vec<i32> = samples[window_start..window_start + usable].to_vec();
-    let iterations = usable / samples_per_step;
+    // The edit is applied to the PADDED original, not padded afterwards:
+    // the relation has to hold on the pad too, and `edit(0)` is not always
+    // 0 (distortion maps silence to -2^(bd-1)/2).
+    let padded_samples = audio_parser::padded_len(n_samples, samples_per_step);
+    let mut original: Vec<i32> =
+        samples[window_start..window_start + n_samples].to_vec();
+    original.resize(padded_samples, 0);
+    let usable = padded_samples;
+    let iterations = padded_samples / samples_per_step;
+    if padded_samples > n_samples {
+        println!(
+            "padding {} samples of silence to reach {iterations} steps",
+            padded_samples - n_samples
+        );
+    }
 
     let ctx = EditCtx {
         bit_depth,
@@ -184,9 +193,11 @@ pub fn run() -> Result<(), String> {
 
     let (rate, channels) = audio_parser::read_rate_and_channels(&audio);
     let edited_path = format!("{out_dir}/{}_{}.wav", stem(&audio), edit.name);
+    // Publish the audio, not the padding: the verifier re-pads from the
+    // signed length, and a file carrying the pad would be N_padded long.
     audio_parser::write_file_at(
         &edited_path,
-        &edited,
+        &edited[..n_samples],
         rate,
         bit_depth as u32,
         if channels == 1 {
@@ -200,7 +211,7 @@ pub fn run() -> Result<(), String> {
     predict(edit.name, bit_depth, batch_size, usable);
 
     println!();
-    println!("Ready to prove {usable} samples ({iterations} steps).");
+    println!("Ready to prove {n_samples} samples ({iterations} steps, {usable} padded).");
     if !prompt::confirm("start proving?").ok_or("cancelled")? {
         println!("not proving; the edited audio was still written.");
         return Ok(());
@@ -273,7 +284,8 @@ pub fn run() -> Result<(), String> {
             bit_depth,
             batch_size,
             comp_size,
-            samples: usable,
+            samples: n_samples,
+            padded_samples,
             iterations: metrics.iterations,
             z0,
             h_orig: metrics.final_hash_original.clone(),
