@@ -108,11 +108,16 @@ pub struct ChainBundle {
     /// True sample count of the published output. Differs from `samples`
     /// when a terminal stage changes the stream length.
     pub samples_out: usize,
+    /// What every stage folds over: `samples` padded to a fold boundary.
+    /// `h_edit` covers this many samples, so a verifier holding only
+    /// `samples_out` of published audio has to rebuild the pad to
+    /// recompute it.
+    pub padded_samples: usize,
     pub source_file: String,
 }
 
 impl ChainBundle {
-    pub const KIND: &'static str = "zk-audio-chain/1";
+    pub const KIND: &'static str = "zk-audio-chain/2";
 }
 
 pub fn write<T: Serialize>(path: &str, value: &T) -> Result<(), String> {

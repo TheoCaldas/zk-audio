@@ -219,6 +219,35 @@ pub fn pad_to_step(samples: &[i32], samples_per_step: usize) -> Vec<i32> {
     out
 }
 
+/// Extends a published *edited* stream to the fold boundary the way the
+/// prover did: the prover padded the edit's INPUT with silence and applied
+/// the edit to the pad too, so the proven tail is the edit of silence, not
+/// silence.
+///
+/// A verifier holds the output and cannot pad with zeros and recommit:
+/// `distort(0)` is `-2^(bd-1)/2`, so a zero-filled tail recomputes a
+/// commitment over a stream nobody folded. `edit_tail` supplies the edit
+/// applied to the silent pad, at the pad's own absolute indices, which is
+/// what an index-dependent edit like tremolo needs.
+pub fn pad_edited_to_step<F>(samples: &[i32], samples_per_step: usize, edit_tail: F) -> Vec<i32>
+where
+    F: FnOnce(usize, usize) -> Vec<i32>,
+{
+    let target = padded_len(samples.len(), samples_per_step);
+    if target == samples.len() {
+        return samples.to_vec();
+    }
+    let tail = edit_tail(samples.len(), target - samples.len());
+    assert_eq!(
+        tail.len(),
+        target - samples.len(),
+        "the edited pad must be exactly the samples needed to reach the fold boundary",
+    );
+    let mut out = samples.to_vec();
+    out.extend_from_slice(&tail);
+    out
+}
+
 /// The running Poseidon commitment to a stream.
 ///
 /// Mirrors the step circuits: normalize, pack into field elements, then

@@ -21,6 +21,10 @@ use crate::signer;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
 
+/// 5 Hz at 44.1 kHz. The period is not in the bundle, and the verifier
+/// does not need it: an edit's value on silence is phase-independent.
+const TREMOLO_PERIOD_DEFAULT: usize = 8820;
+
 /// Edits offerable as a chain stage.
 ///
 /// The same exclusions as the single-edit step - ablation variants and the
@@ -145,10 +149,13 @@ pub fn prove() -> Result<(), String> {
         println!("  using circuit {circuit_name}");
 
         let period = if spec.circuit_prefix == "tremolo" {
-            prompt::usize_or("  LFO period in samples (8820 = 5Hz at 44.1kHz)", 8820)
-                .ok_or("cancelled")?
+            prompt::usize_or(
+                "  LFO period in samples (8820 = 5Hz at 44.1kHz)",
+                TREMOLO_PERIOD_DEFAULT,
+            )
+            .ok_or("cancelled")?
         } else {
-            8820
+            TREMOLO_PERIOD_DEFAULT
         };
 
         let source_b = match spec.apply2.is_some() {
@@ -460,6 +467,7 @@ pub fn prove() -> Result<(), String> {
             h_edit: prev_h_edit.clone().ok_or("no stages were proven")?,
             samples: n_samples,
             samples_out: published_n,
+            padded_samples,
             source_file: audio.clone(),
         },
     )?;
@@ -538,15 +546,25 @@ pub fn verify() -> Result<(), String> {
     let bd = stages[0].bit_depth;
     let bs = stages[0].batch_size;
     let uniform = stages.iter().all(|s| s.bit_depth == bd && s.batch_size == bs);
+    // The manifest's own pad has to be the partition's: it is what the
+    // published audio is extended to before recommitting, so a bundle
+    // naming a shorter one would move the fold boundary.
+    let claimed_pad = audio_parser::padded_len(chain.samples, bs * stages[0].comp_size);
+    let pad_ok = chain.padded_samples == claimed_pad;
     checks.push(Check {
         name: "one partition".to_string(),
-        ok: uniform,
-        detail: if uniform {
-            format!("every stage folds bd={bd}/B={bs}")
-        } else {
+        ok: uniform && pad_ok,
+        detail: if uniform && pad_ok {
+            format!("every stage folds bd={bd}/B={bs}, padded to {claimed_pad}")
+        } else if !uniform {
             "the stages do not all use the same bit depth and batch size, so their \
              commitments are not comparable"
                 .to_string()
+        } else {
+            format!(
+                "the bundle pads to {}, but bd={bd}/B={bs} over {} samples folds {}",
+                chain.padded_samples, chain.samples, claimed_pad
+            )
         },
         secs: t.secs(),
     });
@@ -686,33 +704,70 @@ pub fn verify() -> Result<(), String> {
     }
 
     // The published audio must be what the last stage produced.
+    //
+    // The pad has to be rebuilt, not zero-filled: the prover padded the
+    // last stage's INPUT with silence and applied the edit to the pad, so
+    // for an edit that does not preserve zero the proven tail is the edit
+    // of silence. Zero-filling here recomputes a commitment over a stream
+    // no stage folded.
     let t = Timer::start();
     let (samples, _bits) = audio_parser::read_samples_signed(&audio_path);
     let length_ok = samples.len() == chain.samples_out;
-    let recomputed = if !length_ok || samples.is_empty() {
-        None
-    } else {
-        Some(audio_parser::hex_stream_commitment::<Fq>(
-            &samples,
-            bd as u32,
-            step,
-            BatchHashKind::for_circuit(&stages[stages.len() - 1].circuit_name),
-        ))
+    let last = &stages[stages.len() - 1];
+    let last_spec = crate::bench::config::find_edit(&last.edit);
+    let recomputed = match (&last_spec, length_ok, samples.is_empty()) {
+        (Some(spec), true, false) => {
+            // Every edit's value on silence is the same at every index -
+            // tremolo scales zero to zero at any LFO phase, and the rest
+            // are memoryless - so the pad needs no phase and the period
+            // the prover was prompted for does not have to be recovered.
+            let ctx = EditCtx {
+                bit_depth: bd,
+                batch_size: bs,
+                start_index: 0,
+                comp_size: last.comp_size,
+                period: TREMOLO_PERIOD_DEFAULT,
+            };
+            let padded = audio_parser::pad_edited_to_step(&samples, step, |_from, len| {
+                (spec.apply)(&vec![0i32; len], &ctx)
+            });
+            Some(audio_parser::hex_stream_commitment::<Fq>(
+                &padded,
+                bd as u32,
+                step,
+                BatchHashKind::for_circuit(&last.circuit_name),
+            ))
+        }
+        _ => None,
     };
     let audio_ok = recomputed.as_deref() == Some(chain.h_edit.as_str());
     checks.push(Check {
         name: "published audio".to_string(),
         ok: audio_ok,
         detail: match &recomputed {
-            Some(_) if audio_ok => format!(
-                "recomputed h_edit matches the last stage ({} samples)",
-                chain.samples_out
-            ),
+            Some(_) if audio_ok => match chain.padded_samples > chain.samples_out {
+                true => format!(
+                    "recomputed h_edit matches the last stage ({} samples, padded to {} with {} of {})",
+                    chain.samples_out,
+                    chain.padded_samples,
+                    chain.padded_samples - chain.samples_out,
+                    last.edit,
+                ),
+                false => format!(
+                    "recomputed h_edit matches the last stage ({} samples)",
+                    chain.samples_out
+                ),
+            },
             Some(h) => format!("recomputed {h}, expected {}", chain.h_edit),
             None if !length_ok => format!(
                 "the file has {} samples, the chain's output is {}",
                 samples.len(),
                 chain.samples_out
+            ),
+            None if last_spec.is_none() => format!(
+                "stage {} names the edit {}, which is not in the registry, so the fold pad cannot be rebuilt",
+                stages.len(),
+                last.edit,
             ),
             None => "the file has no samples".to_string(),
         },

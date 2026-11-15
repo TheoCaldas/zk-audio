@@ -315,6 +315,7 @@ fn chain_bundle_round_trips() {
         h_edit: "0xcc".to_string(),
         samples: 620,
         samples_out: 620,
+        padded_samples: 620,
         source_file: "x.wav".to_string(),
     };
     bundle::write(path, &b).expect("write");

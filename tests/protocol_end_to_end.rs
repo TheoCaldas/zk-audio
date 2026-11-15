@@ -870,6 +870,97 @@ fn every_single_input_family_folds_a_ragged_length() {
     eprintln!("ragged N verified against {checked} families");
 }
 
+/// A verifier holds the published output, trimmed to the true length, and
+/// has to rebuild the pad to recommit. For an edit that does not preserve
+/// zero the pad is the edit of silence, so zero-filling it recomputes a
+/// different commitment.
+///
+/// `every_single_input_family_folds_a_ragged_length` hashes the padded
+/// edited stream the prover built, so it cannot see this; the failure it
+/// misses is a false FAIL on the verifier's "published audio" check.
+#[test]
+fn a_rebuilt_pad_recommits_a_trimmed_published_stream() {
+    const DEPTH: usize = 8;
+    const BATCH: usize = 10;
+
+    let comp_size = comp_size_for(DEPTH);
+    let samples_per_step = BATCH * comp_size;
+    let n_samples = samples_per_step + 13;
+
+    let (samples, _bits) = match std::path::Path::new(FIXTURE).exists() {
+        true => audio_parser::read_samples_signed(FIXTURE),
+        false => {
+            eprintln!("SKIP: {FIXTURE} not found");
+            return;
+        }
+    };
+
+    let ctx = EditCtx {
+        bit_depth: DEPTH,
+        batch_size: BATCH,
+        start_index: 0,
+        comp_size,
+        period: 8820,
+    };
+    let unpadded: Vec<i32> = samples[..n_samples].to_vec();
+    let padded_original = audio_parser::pad_to_step(&unpadded, samples_per_step);
+
+    let mut saw_nonzero_pad = false;
+    for name in ["gain_k2", "atten_m1", "dist_d100", "tremolo_f5", "crop"] {
+        let edit = find_edit(name).unwrap_or_else(|| panic!("{name} is a known edit"));
+
+        // What the prover commits to: the edit over the silence-padded input.
+        let proven = (edit.apply)(&padded_original, &ctx);
+        // What the verifier is given: that stream trimmed to the true N.
+        let published = &proven[..n_samples];
+
+        let rebuilt = audio_parser::pad_edited_to_step(published, samples_per_step, |_f, len| {
+            (edit.apply)(&vec![0i32; len], &ctx)
+        });
+        assert_eq!(
+            rebuilt, proven,
+            "{name}: the rebuilt pad is not the stream the prover folded"
+        );
+
+        let kind = BatchHashKind::Sponge { rate: 4 };
+        assert_eq!(
+            audio_parser::hex_stream_commitment::<Fq>(&rebuilt, DEPTH as u32, samples_per_step, kind),
+            audio_parser::hex_stream_commitment::<Fq>(&proven, DEPTH as u32, samples_per_step, kind),
+            "{name}: a rebuilt pad does not recommit to the proven value"
+        );
+
+        // Zero-filling is what the verifier used to do. For an edit whose
+        // value on silence is not 0 it must give a different commitment -
+        // otherwise this test would pass without the fix.
+        if proven[n_samples] != 0 {
+            saw_nonzero_pad = true;
+            let mut zero_filled = published.to_vec();
+            zero_filled.resize(proven.len(), 0);
+            assert_ne!(
+                audio_parser::hex_stream_commitment::<Fq>(
+                    &zero_filled,
+                    DEPTH as u32,
+                    samples_per_step,
+                    kind
+                ),
+                audio_parser::hex_stream_commitment::<Fq>(
+                    &proven,
+                    DEPTH as u32,
+                    samples_per_step,
+                    kind
+                ),
+                "{name} maps silence to {}, so a zero-filled pad must not match",
+                proven[n_samples]
+            );
+        }
+    }
+
+    assert!(
+        saw_nonzero_pad,
+        "no edit tested has a non-zero pad, so the regression is not covered"
+    );
+}
+
 /// Whether a compiled artefact absorbs batches the way
 /// `BatchHashKind::for_circuit` says it does.
 ///

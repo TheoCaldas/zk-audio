@@ -27,7 +27,7 @@ then the source. It writes one `ProofBundle` per stage plus a
 E loads the manifest and its stages and reports each check separately:
 
 ```
-one partition            OK    every stage folds bd=8/B=10
+one partition            OK    every stage folds bd=8/B=10, padded to 620
 manifest ends            OK    the bundle's h_orig and h_edit are the first and last stages'
 stage links              OK    1 links hold: each stage consumed what the previous produced
 source bound             OK    the signed source is the chain's input (N=620)
@@ -137,7 +137,12 @@ rather than trimmed between stages — `edit(0)` is not 0 for every edit.
 
 `n_samples` (the chain's input length, signed) and `n_samples_out` (the
 published length) are carried separately, because a terminal crop makes
-them differ.
+them differ. The bundle also carries `padded_samples`, the boundary every
+stage folds to: the published WAV is trimmed to `n_samples_out`, so a
+verifier has to restore the pad before recomputing `h_edit`, and the pad
+it restores is the **last stage's edit applied to silence**, not silence.
+`audio_parser::pad_edited_to_step` does that; see README.md, "How a
+verifier rebuilds the pad".
 
 ## Floor rounding does not fuse
 

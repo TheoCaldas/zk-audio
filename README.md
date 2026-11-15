@@ -214,7 +214,7 @@ edited audio, then reports each property separately:
 bundles agree        OK        0ms   same h_orig, bd=8, B=10, N=110250
 proof                OK       3.1s   verified, 356 steps
 bundle commitments   OK        0ms   h_orig and h_edit match the proof's terminal state
-edited audio         OK       52ms   recomputed h_edit matches (110250 samples, padded to 110360)
+edited audio         OK       52ms   recomputed h_edit matches (110250 samples, padded to 110360 with 110 of gain_k2)
 signature            OK        0ms   valid over (h_orig, N=110250), using the key in the bundle
 verifier key                  2.2s   derived from the circuit
 total                         5.3s
@@ -282,7 +282,7 @@ minutes of folding. See [docs/edit_chains.md](docs/edit_chains.md).
 source, and the published audio:
 
 ```
-one partition            OK    every stage folds bd=8/B=10
+one partition            OK    every stage folds bd=8/B=10, padded to 620
 manifest ends            OK    the bundle's h_orig and h_edit are the first and last stages'
 stage links              OK    1 links hold: each stage consumed what the previous produced
 source bound             OK    the signed source is the chain's input (N=620)
@@ -703,6 +703,21 @@ anyway.
 padding exists only inside the commitment and the witness. A stereo stream
 must still end on a frame, so `N` has to be a multiple of the channel
 count — `write_file_at` asserts it.
+
+**How a verifier rebuilds the pad.** Because the WAV is trimmed to `N`, a
+verifier recomputing `h_edit` has to restore the `N_padded - N` samples the
+proof folded, and they are not silence: the prover padded the edit's
+*input* and applied the edit to the pad, so the proven tail is `edit(0)` —
+`-2^(bd-1)/2` for a rectifier fold. `audio_parser::pad_edited_to_step`
+extends the published stream with the edit applied to a silent pad, which
+is what options C and E recommit over. Zero-filling instead recomputes a
+commitment over a stream nobody folded, and the edits where it happens to
+work (`edit(0) == 0`: gain, attenuation, tremolo, crop) are why that was
+not caught sooner. An edit's value on silence does not depend on the sample
+index, so the pad needs no LFO phase.
+`tests/protocol_end_to_end.rs::a_rebuilt_pad_recommits_a_trimmed_published_stream`
+pins both halves: the rebuilt pad reproduces the proven stream, and a
+zero-filled one does not.
 
 **The protocol establishes**: "these `N` samples, silence-extended to a
 fold boundary, are the sanctioned edit of a stream committed as `h_orig`."

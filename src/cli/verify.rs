@@ -3,6 +3,7 @@
 use nova_snark::traits::Engine;
 
 use crate::audio_parser;
+use crate::bench::config::EditCtx;
 use crate::cli::bundle::{self, ProofBundle, SignatureBundle};
 use crate::cli::prompt;
 use crate::cli::{fmt_secs, Timer};
@@ -12,6 +13,10 @@ use crate::protocol;
 use crate::signer;
 
 type Fq = <nova_snark::provider::PallasEngine as Engine>::Scalar;
+
+/// 5 Hz at 44.1 kHz. Not in the bundle, and not needed to rebuild a pad:
+/// an edit's value on silence is phase-independent.
+const TREMOLO_PERIOD_DEFAULT: usize = 8820;
 
 /// Folding steps an unpadded sample count is committed over.
 ///
@@ -245,31 +250,61 @@ pub fn run() -> Result<(), String> {
     // trimmed inside the last fold recommits to the same value. Only the
     // signed N rules that out.
     let length_ok = samples.len() == proof.samples;
-    let recomputed = if !length_ok || samples.is_empty() {
-        None
-    } else {
-        Some(audio_parser::hex_stream_commitment::<Fq>(
-            &samples,
-            proof.bit_depth as u32,
-            samples_per_step,
-            BatchHashKind::for_circuit(&proof.circuit_name),
-        ))
+    // The pad has to be rebuilt the way the prover built it: silence onto
+    // the edit's INPUT, then the edit applied to it. An edit that does not
+    // preserve zero - a rectifier fold maps silence to -2^(bd-1)/2 - leaves
+    // a proven tail that zero-filling here would not reproduce.
+    let spec = crate::bench::config::find_edit(&proof.edit);
+    let recomputed = match (&spec, length_ok, samples.is_empty()) {
+        (Some(spec), true, false) => {
+            // An edit's value on silence does not depend on the index, so
+            // the pad needs no LFO phase and tremolo's period, which the
+            // bundle does not carry, is not required.
+            let ctx = EditCtx {
+                bit_depth: proof.bit_depth,
+                batch_size: proof.batch_size,
+                start_index: 0,
+                comp_size: proof.comp_size,
+                period: TREMOLO_PERIOD_DEFAULT,
+            };
+            let padded = audio_parser::pad_edited_to_step(&samples, samples_per_step, |_f, len| {
+                (spec.apply)(&vec![0i32; len], &ctx)
+            });
+            Some(audio_parser::hex_stream_commitment::<Fq>(
+                &padded,
+                proof.bit_depth as u32,
+                samples_per_step,
+                BatchHashKind::for_circuit(&proof.circuit_name),
+            ))
+        }
+        _ => None,
     };
     let audio_ok = recomputed.as_deref() == Some(proof.h_edit.as_str());
     checks.push(Check {
         name: "edited audio",
         ok: audio_ok,
         detail: match &recomputed {
-            Some(_) if audio_ok => format!(
-                "recomputed h_edit matches ({} samples, padded to {})",
-                proof.samples, proof.padded_samples
-            ),
+            Some(_) if audio_ok => match proof.padded_samples > proof.samples {
+                true => format!(
+                    "recomputed h_edit matches ({} samples, padded to {} with {} of {})",
+                    proof.samples,
+                    proof.padded_samples,
+                    proof.padded_samples - proof.samples,
+                    proof.edit,
+                ),
+                false => format!("recomputed h_edit matches ({} samples)", proof.samples),
+            },
             Some(h) => format!("recomputed {h}, expected {}", proof.h_edit),
             None if !length_ok => format!(
                 "the file has {} samples, the proof is about {}. The commitment \
                  covers the padded stream, so the length is signed separately.",
                 samples.len(),
                 proof.samples
+            ),
+            None if spec.is_none() => format!(
+                "the bundle names the edit {}, which is not in the registry, so the \
+                 fold pad cannot be rebuilt",
+                proof.edit
             ),
             None => "the file has no samples".to_string(),
         },
