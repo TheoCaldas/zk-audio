@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 380" width="760" height="380" font-family="Charter, Georgia, 'Times New Roman', serif">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#1a1a1a"/>
+    </marker>
+    <marker id="a2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9 z" fill="#6b6b6b"/>
+    </marker>
+  </defs>
+
+  <rect width="760" height="380" fill="#ffffff"/>
+
+  <!-- ================= (a) arity-2 chain ================= -->
+  <text x="34" y="30" font-size="13.5" font-weight="bold">(a) arity-2 chain — <tspan font-style="italic">BatchHasher</tspan></text>
+  <text x="34" y="48" font-size="11.5" fill="#6b6b6b" font-style="italic">B − 1 = 99 permutations, 51,183 constraints</text>
+
+  <!-- seed: batch[0], not a zero capacity -->
+  <text x="48" y="94" font-size="12.5" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3">1</tspan></text>
+  <line x1="62" y1="90" x2="104" y2="90" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+
+  <rect x="104" y="72" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="131" y="95" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="131" y="64" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(2)</text>
+
+  <line x1="158" y1="90" x2="214" y2="90" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <rect x="214" y="72" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="241" y="95" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="241" y="64" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(2)</text>
+
+  <line x1="268" y1="90" x2="320" y2="90" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="348" y="96" font-size="16" text-anchor="middle">· · ·</text>
+  <line x1="376" y1="90" x2="428" y2="90" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+
+  <rect x="428" y="72" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="455" y="95" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="455" y="64" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(2)</text>
+
+  <line x1="482" y1="90" x2="528" y2="90" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="536" y="95" font-size="12.5" text-anchor="start"><tspan font-style="italic">h</tspan><tspan font-size="0.7em" dy="3">batch</tspan></text>
+
+  <!-- one message per permutation -->
+  <line x1="131" y1="146" x2="131" y2="112" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+  <line x1="241" y1="146" x2="241" y2="112" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+  <line x1="455" y1="146" x2="455" y2="112" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+  <text x="131" y="160" font-size="12" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3">2</tspan></text>
+  <text x="241" y="160" font-size="12" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3">3</tspan></text>
+  <text x="455" y="160" font-size="12" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3" font-style="italic">B</tspan></text>
+  <text x="600" y="160" font-size="11.5" fill="#6b6b6b" font-style="italic">one element absorbed per call</text>
+
+  <!-- divider -->
+  <line x1="34" y1="190" x2="726" y2="190" stroke="#d8d8d8" stroke-width="1"/>
+
+  <!-- ================= (b) rate-4 sponge ================= -->
+  <text x="34" y="216" font-size="13.5" font-weight="bold">(b) rate-4 sponge — <tspan font-style="italic">SpongeBatchHasher</tspan></text>
+  <text x="34" y="234" font-size="11.5" fill="#6b6b6b" font-style="italic">⌈B/4⌉ = 25 permutations, 18,400 constraints  (−59 %)</text>
+
+  <text x="48" y="286" font-size="12.5" text-anchor="middle"><tspan font-style="italic">s</tspan><tspan font-size="0.72em" dy="3">0</tspan><tspan dy="-3" dx="2"> = 0</tspan></text>
+  <line x1="78" y1="282" x2="104" y2="282" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+
+  <rect x="104" y="264" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="131" y="287" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="131" y="256" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(5)</text>
+
+  <line x1="158" y1="282" x2="214" y2="282" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <rect x="214" y="264" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="241" y="287" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="241" y="256" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(5)</text>
+
+  <line x1="268" y1="282" x2="320" y2="282" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="348" y="288" font-size="16" text-anchor="middle">· · ·</text>
+  <line x1="376" y1="282" x2="428" y2="282" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+
+  <rect x="428" y="264" width="54" height="36" rx="4" fill="#efefef" stroke="#1a1a1a" stroke-width="1.2"/>
+  <text x="455" y="287" font-size="14" text-anchor="middle" font-style="italic">π</text>
+  <text x="455" y="256" font-size="9.5" text-anchor="middle" fill="#555">Poseidon(5)</text>
+
+  <line x1="482" y1="282" x2="528" y2="282" stroke="#1a1a1a" stroke-width="1.6" marker-end="url(#a2)"/>
+  <text x="536" y="287" font-size="12.5" text-anchor="start"><tspan font-style="italic">h</tspan><tspan font-size="0.7em" dy="3">batch</tspan></text>
+
+  <!-- four messages per permutation -->
+  <line x1="131" y1="330" x2="131" y2="304" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+  <line x1="241" y1="330" x2="241" y2="304" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+  <line x1="455" y1="330" x2="455" y2="304" stroke="#6b6b6b" stroke-width="1.2" marker-end="url(#a2g)"/>
+
+  <text x="131" y="346" font-size="11.5" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3">1</tspan><tspan dy="-3" dx="2">…</tspan><tspan font-style="italic" dx="1">m</tspan><tspan font-size="0.72em" dy="3">4</tspan></text>
+  <text x="241" y="346" font-size="11.5" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3">5</tspan><tspan dy="-3" dx="2">…</tspan><tspan font-style="italic" dx="1">m</tspan><tspan font-size="0.72em" dy="3">8</tspan></text>
+  <text x="455" y="346" font-size="11.5" text-anchor="middle"><tspan font-style="italic">m</tspan><tspan font-size="0.72em" dy="3"><tspan font-style="italic">B</tspan>−3</tspan><tspan dy="-3" dx="2">…</tspan><tspan font-style="italic" dx="1">m</tspan><tspan font-size="0.72em" dy="3" font-style="italic">B</tspan></text>
+  <text x="131" y="362" font-size="11" text-anchor="middle" fill="#6b6b6b" font-style="italic">4 elements</text>
+  <text x="241" y="362" font-size="11" text-anchor="middle" fill="#6b6b6b" font-style="italic">4 elements</text>
+  <text x="455" y="362" font-size="11" text-anchor="middle" fill="#6b6b6b" font-style="italic">zero-padded</text>
+  <text x="600" y="346" font-size="11.5" fill="#6b6b6b" font-style="italic">rate r = 4 absorbed per call</text>
+</svg>

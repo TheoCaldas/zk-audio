@@ -619,6 +619,10 @@ Headline results from the optimisation study:
   | sponge, rate 4 | 25 | 18,400 |
   | sponge, rate 8 | 13 | 15,223 |
 
+  Both constructions are drawn in
+  [docs/figures/](docs/figures/) (`sponge_batch_hasher` and
+  `batch_digest_comparison`, as SVG and TikZ).
+
   **Security note.** circomlib's `Poseidon(n)` is a fixed-length hash with
   a standard-conformant domain tag. Chaining it as `SpongeBatchHasher`
   does is Merkle–Damgård over that compression function, not the sponge
