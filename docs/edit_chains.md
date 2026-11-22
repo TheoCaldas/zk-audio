@@ -151,3 +151,111 @@ floors is not `(f2 . f1)(x)` with one. Any fused circuit must apply the
 stages in sequence with a floor at each, matching what the chain proves
 and what the Rust references compute — fusing the arithmetic and flooring
 once gives a different, unprovable stream.
+
+## Fusion: one proof for the whole composite
+
+`src/fused.rs` proves `edit = f3(f2(f1(orig)))` in a single step circuit.
+The input is decompressed once, each stage's relation template is applied
+digit-wise in signals, the result is recompressed once, and only the
+endpoints are hashed. The chain remains the control; both are built and
+both verify.
+
+The circuits are generated, not hand-written, because the artefact set is
+a product of family, bit depth, parameters and stage order:
+
+```bash
+python3 scripts/gen_fused_circuit.py gain_k2 atten_m1 dist_d100 --bd 8 --B 10
+./compile.circuit.sh circuits/edits/_fused/fused_gain_k2_atten_m1_dist_d100_b8_B10.circom
+```
+
+The generator reuses `ClampedGain`, `AttenuatedGain`, `DistortSample` and
+`ModulateSample` from the family step circuits unmodified, so a fused
+circuit cannot drift from the stages it fuses. A stage list containing
+`crop`, `concat`, `merge` or `gain2` is rejected with the reason.
+
+### Measured: A against B
+
+`cargo run --release --bin compare_chain -- --stages <list> --bd 8 --B 100 --n <N>`
+proves the same composite both ways on one input and reports the delta;
+`--csv` appends a row per side and `scripts/analyze_fusion.py` turns the
+file into tables, a fitted cost model and a figure. The full sweep is
+`logs/fusion/` (summary.md, the CSV, the figure).
+
+Two chains at bd 8, B 100, 0.1 s to 30 s of 44.1 kHz stereo:
+
+| audio | folds | gain->atten->dist | gain->tremolo |
+|---|---|---|---|
+| 0.11 s | 3 | 44.3% | 12.5% |
+| 1.02 s | 29 | 41.0% | 8.3% |
+| 5.03 s | 143 | 39.3% | 20.1% |
+| 10.02 s | 285 | 38.0% | 23.2% |
+| 30.02 s | 854 | **34.4%** | **25.0%** |
+
+At 30 s the three-stage chain falls from 989 s to 649 s (16.5 min to
+10.8 min) and the tremolo pair from 654 s to 491 s.
+
+**The saving is a curve between two computable ratios, not a constant,
+and the two chains approach it from opposite ends.** Each interpolates
+from its one-fold saving to its folding-saving as folds accumulate:
+
+| | one fold | 30 s | direction |
+|---|---|---|---|
+| gain->atten->dist | 45% | 34.4% | falls |
+| gain->tremolo | 5% | 25.0% | rises |
+
+What decides which end a chain starts from is **power-of-two padding**,
+not the constraint counts. Spartan pads a proof's constraint count to the
+next power of two, so the compression toll tracks the padded size and
+fusion's compression saving is the ratio of padded totals:
+
+| chain | chain padded | fused padded | predicted | measured |
+|---|---|---|---|---|
+| gain->atten->dist | 2^18+2^17+2^19 = 917,504 | 2^19 = 524,288 | 43% | 43.3% |
+| gain->tremolo | 2^18+2^18 = 524,288 | 2^19 = 524,288 | 0% | 9.7% |
+
+The tremolo pair fuses two circuits that each fit under 2^18 into one
+that crosses into 2^19, so its padded total does not shrink and fusion
+buys nothing up front - its whole saving comes from folding a 20% smaller
+circuit. The 9.7% residual is per-proof overhead that one Spartan
+invocation avoids regardless of padding. A chain whose fused circuit
+lands just under a power of two therefore gains on both terms, which
+makes batch size a tuning knob for fusion and not only for the fold
+count.
+
+Asymptotically the saving is the folding ratio, measured at the largest
+case rather than extrapolated: 33.6% for the three-stage chain and 26.3%
+for the tremolo pair, where folding is over 90% of the total. A
+least-squares fit through all eight points agrees (33.4% and 26.9%), but
+only once the large-N points are in: per-fold cost falls about 15% from 3
+folds to 854 as Nova's per-step overhead amortises, and a fit over short
+cases alone overstates the slope.
+
+Compression time is flat in N for a fixed circuit, as IVC predicts -
+54-62 s for the chain and 30-36 s for the fused circuit across a 285x
+range in N. The variation within that is thermal throttling on a laptop
+under sustained load, not a size effect; `analyze_fusion.py` warns when
+it exceeds 15% so an affected point is not read as one. Savings ratios
+survive it because both sides are measured minutes apart under the same
+conditions, but absolute times from late points in a long sweep should
+not be quoted against early ones.
+
+### What fusion gives up
+
+The intermediate streams get no commitment. Nothing can later be proven
+about the half-edited audio, and there is no stage-by-stage audit trail:
+a verifier checks one proof instead of n proofs and n-1 links. When the
+intermediates must be referable — composing proofs made by different
+parties at different times — the state has to widen to carry their
+running commitments, which costs the sponge absorptions but still skips
+the decompression.
+
+### The range-check the composition rests on
+
+A single stage decompresses its input, so every digit it reads was
+range-checked by `Num2Bits`. A fused stage after the first reads a digit
+produced by the preceding stage's arithmetic, which no `Decompressor`
+checks. The next stage's comparators and the final `Recompressor` both
+rely on that digit fitting in `bit_depth` bits, so every stage must bound
+its own output: gain's clamp, atten's shift and tremolo's `L <= 2^16` all
+do, and `gen_fused_circuit.py` refuses to place an unbounded stage
+anywhere but last.

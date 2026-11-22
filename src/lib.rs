@@ -6,6 +6,7 @@ pub mod cli;
 pub mod poseidon;
 pub mod protocol;
 pub mod chain;
+pub mod fused;
 pub mod circom_bridge;
 pub mod witness;
 pub mod audio_parser;

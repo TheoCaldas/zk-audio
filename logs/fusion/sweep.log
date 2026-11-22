@@ -1,0 +1,241 @@
+=== N=8820  gain_k2,atten_m1,dist_d100  21:58:41 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                     3792         2335      38.4%
+  compression ms                52333        29540      43.6%
+  total prove ms                85590        47676      44.3%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=8820  gain_k2,tremolo_f5  22:01:00 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                     2505         1802      28.1%
+  compression ms                31916        27627      13.4%
+  total prove ms                53238        46578      12.5%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=44100  gain_k2,atten_m1,dist_d100  22:02:47 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                    16584        10770      35.1%
+  compression ms                50024        29086      41.9%
+  total prove ms                99808        56734      43.2%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=44100  gain_k2,tremolo_f5  22:05:32 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                    10901        10370       4.9%
+  compression ms                30456        28704       5.8%
+  total prove ms                59913        55478       7.4%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=88200  gain_k2,atten_m1,dist_d100  22:07:34 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                    32697        20563      37.1%
+  compression ms                52378        29043      44.6%
+  total prove ms               114839        67747      41.0%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=88200  gain_k2,tremolo_f5  22:10:47 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                    20493        15052      26.6%
+  compression ms                31170        29615       5.0%
+  total prove ms                69115        63392       8.3%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=176400  gain_k2,atten_m1,dist_d100  22:13:08 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                    62010        40271      35.1%
+  compression ms                59262        36571      38.3%
+  total prove ms               152823        93962      38.5%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=176400  gain_k2,tremolo_f5  22:17:25 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                    39103        29708      24.0%
+  compression ms                29556        33683     -14.0%
+  total prove ms                87357        80615       7.7%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=441000  gain_k2,atten_m1,dist_d100  22:20:21 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                   155138       101204      34.8%
+  compression ms                56756        32148      43.4%
+  total prove ms               249574       151388      39.3%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=441000  gain_k2,tremolo_f5  22:27:18 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                   107572        74913      30.4%
+  compression ms                32812        35886      -9.4%
+  total prove ms               159339       127278      20.1%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=882000  gain_k2,atten_m1,dist_d100  22:32:17 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                   312953       201840      35.5%
+  compression ms                62481        34705      44.5%
+  total prove ms               410157       254429      38.0%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=882000  gain_k2,tremolo_f5  22:43:43 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                   208402       151491      27.3%
+  compression ms                31508        29603       6.0%
+  total prove ms               257549       197738      23.2%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=1764000  gain_k2,atten_m1,dist_d100  22:51:35 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                   608718       407734      33.0%
+  compression ms                57067        32072      43.8%
+  total prove ms               699508       458436      34.5%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=1764000  gain_k2,tremolo_f5  23:11:06 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                   401866       295593      26.4%
+  compression ms                30653        27683       9.7%
+  total prove ms               449763       339100      24.6%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=2646000  gain_k2,atten_m1,dist_d100  23:24:22 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             595515       434105      27.1%
+  folding ms                   904280       600755      33.6%
+  compression ms                54292        30197      44.4%
+  total prove ms               989528       648640      34.4%
+
+  proofs to verify                  3            1
+  intermediate commitments          2            0
+
+  A commits to the input and the final output only. The 2 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== N=2646000  gain_k2,tremolo_f5  23:51:53 ===
+  verified: 1 proof, 0 links
+
+--- A vs B ---
+                            B (chain)    A (fused)     saving
+  constraints/step             401512       320807      20.1%
+  folding ms                   604657       445640      26.3%
+  compression ms                30078        28519       5.2%
+  total prove ms               654319       490908      25.0%
+
+  proofs to verify                  2            1
+  intermediate commitments          1            0
+
+  A commits to the input and the final output only. The 1 intermediate
+  commitment(s) B publishes are what pay for its stage-by-stage auditability.
+=== SWEEP COMPLETE 00:11:07 ===
