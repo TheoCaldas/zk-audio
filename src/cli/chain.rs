@@ -37,6 +37,10 @@ fn chainable_edits() -> Vec<EditSpec> {
         .into_iter()
         .filter(|e| e.circuit_prefix != "multiplier")
         .filter(|e| e.name != "concat")
+        // `crop_bound` needs its window in z0, which the chain driver
+        // zeroes. A zero-length window gates the edited chain off for
+        // every step, so the stage would prove nothing about its output.
+        .filter(|e| e.name != "crop_bound")
         .filter(|e| {
             !["_nohash", "_wide", "_wide4", "_wide8", "_onehash", "_sponge4", "_sponge8", "_sponge2h"]
                 .iter()
@@ -414,12 +418,14 @@ pub fn prove() -> Result<(), String> {
                 // proven stream.
                 samples: n_samples,
                 padded_samples,
+                samples_out: None,
                 iterations: metrics.iterations,
                 z0: vec![0u64; s.spec.state_width],
                 h_orig: metrics.final_hash_original.clone(),
                 h_edit: metrics.final_hash_edited.clone(),
                 h_b,
                 len_a: None,
+                window: None,
                 proof: serde_json::from_slice(&artifacts.proof_json)
                     .map_err(|e| e.to_string())?,
             },

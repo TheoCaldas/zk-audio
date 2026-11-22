@@ -48,11 +48,19 @@ pub struct ProofBundle {
     pub bit_depth: usize,
     pub batch_size: usize,
     pub comp_size: usize,
-    /// True sample count, before padding.
+    /// True sample count of the stream committed as `h_orig`, before
+    /// padding. For `crop_bound` this is the original's length, not the
+    /// window's, because `h_orig` covers the whole original - which is
+    /// what lets it equal a signature over it.
     pub samples: usize,
     /// What the proof folds over: `samples` padded to a fold boundary.
     /// `iterations` counts these, not `samples`.
     pub padded_samples: usize,
+    /// Published sample count, when it differs from `samples`. Set by
+    /// `crop_bound`, where the file the verifier holds is the window and
+    /// `samples` describes the original it was cut from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub samples_out: Option<usize>,
     /// Fold count, required by `CompressedSNARK::verify`.
     pub iterations: usize,
     /// Initial IVC state, required by `verify` and not always zero: crop
@@ -70,6 +78,16 @@ pub struct ProofBundle {
     /// carries it through the fold chain unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub len_a: Option<usize>,
+    /// `crop_bound`'s window, in samples from the start of the original:
+    /// `(start, fold-aligned length)`. Part of the statement, carried
+    /// through the fold chain unchanged, so a verifier reads the same
+    /// values back out of the terminal state.
+    ///
+    /// Present only for `crop_bound`. Plain `crop` keeps its window start
+    /// in `z0` alone, because its chain begins there rather than covering
+    /// the whole original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<(usize, usize)>,
     /// The serialized `CompressedSNARK`, nested rather than encoded so the
     /// bundle is one JSON document.
     pub proof: serde_json::Value,

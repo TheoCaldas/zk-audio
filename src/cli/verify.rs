@@ -85,6 +85,10 @@ pub fn run() -> Result<(), String> {
     // failure would report a structural property as a defect; the detail
     // line says what is and is not established instead.
     let spans = proof.len_a.is_some();
+    // `crop_bound`'s h_orig covers the whole original, so unlike plain
+    // crop it CAN equal a signature over it, and the ordinary agreement
+    // check applies unchanged. That is the whole point of the circuit.
+    let window = proof.window;
     let consistent =
         spans || (sig.h_orig == proof.h_orig && params_agree && lengths_agree);
     checks.push(Check {
@@ -216,6 +220,46 @@ pub fn run() -> Result<(), String> {
             secs: t.secs(),
         });
 
+        // `crop_bound` carries its window through the fold chain, so the
+        // values read back must be the ones the bundle claims. Without
+        // this the gate could have selected a different run of the
+        // original than the bundle names.
+        if let Some((start, len)) = window {
+            let t = Timer::start();
+            let read = |i: usize| -> Option<u64> {
+                let s = state.get(i)?;
+                u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()
+            };
+            // Slot 2 is the counter: it must have reached the window's
+            // end, or the chain stopped before folding all of it.
+            let ok = read(3) == Some(start as u64)
+                && read(4) == Some(len as u64)
+                && read(2) == Some(proof.padded_samples as u64);
+            checks.push(Check {
+                name: "window",
+                ok,
+                detail: if ok {
+                    format!(
+                        "the proof folds [0, {}) of the original and keeps [{start}, {}), \
+                         as the bundle claims",
+                        proof.padded_samples,
+                        start + len
+                    )
+                } else {
+                    format!(
+                        "the bundle claims the window [{start}, {}) over {} folded \
+                         samples; the proof carries start={:?}, len={:?}, counter={:?}",
+                        start + len,
+                        proof.padded_samples,
+                        read(3),
+                        read(4),
+                        read(2)
+                    )
+                },
+                secs: t.secs(),
+            });
+        }
+
         // Concat's join point travels in the state and is carried through
         // unchanged, so the value the verifier reads back must be the one
         // the bundle claims; otherwise the join is not where it says.
@@ -249,7 +293,11 @@ pub fn run() -> Result<(), String> {
     // Length first: the commitment is over the padded stream, so a file
     // trimmed inside the last fold recommits to the same value. Only the
     // signed N rules that out.
-    let length_ok = samples.len() == proof.samples;
+    //
+    // `crop_bound` publishes the window, while `samples` describes the
+    // original, so the length the file must have is the published count.
+    let published_n = proof.samples_out.unwrap_or(proof.samples);
+    let length_ok = samples.len() == published_n;
     // The pad has to be rebuilt the way the prover built it: silence onto
     // the edit's INPUT, then the edit applied to it. An edit that does not
     // preserve zero - a rectifier fold maps silence to -2^(bd-1)/2 - leaves
@@ -284,22 +332,29 @@ pub fn run() -> Result<(), String> {
         name: "edited audio",
         ok: audio_ok,
         detail: match &recomputed {
-            Some(_) if audio_ok => match proof.padded_samples > proof.samples {
+            // `crop_bound` names the window it kept, since `samples`
+            // there describes the original rather than the published file.
+            Some(_) if audio_ok && window.is_some() => format!(
+                "recomputed h_edit matches the {published_n}-sample window of a \
+                 {}-sample original",
+                proof.samples
+            ),
+            Some(_) if audio_ok => match proof.padded_samples > published_n {
                 true => format!(
                     "recomputed h_edit matches ({} samples, padded to {} with {} of {})",
-                    proof.samples,
+                    published_n,
                     proof.padded_samples,
-                    proof.padded_samples - proof.samples,
+                    proof.padded_samples - published_n,
                     proof.edit,
                 ),
-                false => format!("recomputed h_edit matches ({} samples)", proof.samples),
+                false => format!("recomputed h_edit matches ({published_n} samples)"),
             },
             Some(h) => format!("recomputed {h}, expected {}", proof.h_edit),
             None if !length_ok => format!(
-                "the file has {} samples, the proof is about {}. The commitment \
-                 covers the padded stream, so the length is signed separately.",
-                samples.len(),
-                proof.samples
+                "the file has {} samples, the proof is about {published_n}. The \
+                 commitment covers the padded stream, so the length is signed \
+                 separately.",
+                samples.len()
             ),
             None if spec.is_none() => format!(
                 "the bundle names the edit {}, which is not in the registry, so the \
@@ -419,6 +474,17 @@ pub fn run() -> Result<(), String> {
                  followed by those committed as h_b, joined at {} samples.",
                 proof.len_a.unwrap_or(0)
             ),
+            // The only edit whose statement names a position inside the
+            // signed original rather than covering all of it.
+            "crop_bound" => {
+                let (start, len) = window.unwrap_or((0, 0));
+                println!(
+                    "VERDICT: the published audio is provably samples [{start}, {}) of an \
+                     original committed as h_orig and signed by the key in this bundle, \
+                     taken verbatim.",
+                    start + len
+                )
+            }
             edit => println!(
                 "VERDICT: the published audio is provably {edit} of an original committed \
                  as h_orig and signed by the key in this bundle."
@@ -430,6 +496,12 @@ pub fn run() -> Result<(), String> {
         println!("verification compares the key against an out-of-band source.");
         if proof.edit == "crop" {
             println!("Note: a crop proof does not bind the excerpt to a larger original.");
+        }
+        if window.is_some() {
+            println!();
+            println!("The excerpt IS bound to the signed original: h_orig above is a");
+            println!("commitment to the whole stream, not to the excerpt, and the");
+            println!("window read back from the proof says which samples were kept.");
         }
         if proof.len_a.is_some() {
             println!();

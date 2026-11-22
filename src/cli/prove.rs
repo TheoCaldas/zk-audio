@@ -42,6 +42,7 @@ fn describe(e: &EditSpec) -> String {
         "dist" => format!("rectifier fold at {}% wet", e.factor.unwrap_or(0)),
         "tremolo" => format!("{} Hz amplitude modulation", e.factor.unwrap_or(0)),
         "crop" => "verbatim contiguous window".to_string(),
+        "crop_bound" => "verbatim window, bound to the whole original".to_string(),
         "merge" => "floor((a+b)/2), mix two sources".to_string(),
         "concat" => "a then b, join two sources".to_string(),
         other => other.to_string(),
@@ -161,15 +162,23 @@ pub fn run() -> Result<(), String> {
         None => None,
     };
 
-    // crop carries its window start in the IVC state, so z0 is not zero.
-    let (window_start, initial_state) = if edit.circuit_prefix == "crop" {
+    // Both crops carry a window in the IVC state, so z0 is not zero. They
+    // differ in what gets folded: `crop` folds only the window, so the
+    // offset is where its stream starts; `crop_bound` folds the whole
+    // original from 0 and the window only gates the edited chain.
+    let bound = edit.circuit_prefix == "crop_bound";
+    let (window_start, initial_state) = if edit.circuit_prefix == "crop" || bound {
         let s = prompt::usize_or("window start (samples, fold-aligned)", 0).ok_or("cancelled")?;
         if s % samples_per_step != 0 {
             return Err(format!(
                 "window start {s} is not a multiple of {samples_per_step} samples/step"
             ));
         }
-        (s, vec![(2usize, s as u64)])
+        match bound {
+            // win_len is not known until the length prompt; filled below.
+            true => (s, vec![(3usize, s as u64)]),
+            false => (s, vec![(2usize, s as u64)]),
+        }
     } else {
         (0, Vec::new())
     };
@@ -191,26 +200,83 @@ pub fn run() -> Result<(), String> {
         "{available} samples available = {max_folds} steps of {samples_per_step} samples \
          once padded"
     );
+    if bound {
+        println!(
+            "crop_bound folds the WHOLE original regardless, so this is the window \
+             length, not the proving cost."
+        );
+    }
     let n_samples = loop {
-        let n = prompt::usize_or("how many samples to prove", available).ok_or("cancelled")?;
+        let n = prompt::usize_or(
+            match bound {
+                true => "how many samples to keep",
+                false => "how many samples to prove",
+            },
+            available,
+        )
+        .ok_or("cancelled")?;
         if n >= 1 && n <= available {
             break n;
         }
         println!("  enter 1-{available}");
     };
+    // `crop_bound` binds the excerpt to a commitment over the whole
+    // original, so the folded stream is the original itself - every batch
+    // of it, from sample 0 - and the window is a sub-range of that. The
+    // window length must be fold-aligned too, since the gate is per-step.
+    let window_len = match bound {
+        true => audio_parser::padded_len(n_samples, samples_per_step),
+        false => n_samples,
+    };
+    // The window may end inside the silence pad - the pad is folded and
+    // committed like any other batch - but not past it, since there are
+    // no further folds for the gate to select.
+    if bound {
+        let folded = audio_parser::padded_len(samples.len(), samples_per_step);
+        if window_start + window_len > folded {
+            return Err(format!(
+                "the window [{window_start}, {}) runs past the {folded} samples the \
+                 proof folds. The window length is rounded up to a fold boundary, so a \
+                 window ending inside the last partial step needs a shorter one.",
+                window_start + window_len
+            ));
+        }
+    }
     // The edit is applied to the PADDED original, not padded afterwards:
     // the relation has to hold on the pad too, and `edit(0)` is not always
     // 0 (distortion maps silence to -2^(bd-1)/2).
-    let padded_samples = audio_parser::padded_len(n_samples, samples_per_step);
-    let mut original: Vec<i32> =
-        samples[window_start..window_start + n_samples].to_vec();
+    //
+    // For `crop_bound` the proven stream is the WHOLE original, from
+    // sample 0 to the end of the file. Stopping at the window's end would
+    // commit h_orig to a prefix, and a prefix commitment cannot equal a
+    // signature over the file - which is exactly the binding this circuit
+    // exists to provide. The cost is one fold per batch of the original,
+    // not per batch of the excerpt.
+    let (proven_from, proven_n) = match bound {
+        true => (0usize, samples.len()),
+        false => (window_start, n_samples),
+    };
+    let padded_samples = audio_parser::padded_len(proven_n, samples_per_step);
+    let mut original: Vec<i32> = samples[proven_from..proven_from + proven_n].to_vec();
     original.resize(padded_samples, 0);
     let usable = padded_samples;
     let iterations = padded_samples / samples_per_step;
-    if padded_samples > n_samples {
+    if padded_samples > proven_n {
         println!(
             "padding {} samples of silence to reach {iterations} steps",
-            padded_samples - n_samples
+            padded_samples - proven_n
+        );
+    }
+    if bound {
+        println!(
+            "folding the whole original: {padded_samples} samples, {iterations} steps. \
+             Window [{window_start}, {}) is what gets published.",
+            window_start + window_len
+        );
+        println!(
+            "binding the excerpt to the full commitment costs {iterations} folds rather \
+             than {}; that is the price of h_orig covering the signed stream.",
+            window_len / samples_per_step
         );
     }
 
@@ -225,7 +291,10 @@ pub fn run() -> Result<(), String> {
     let ctx = EditCtx {
         bit_depth,
         batch_size,
-        start_index: window_start,
+        // Where the folded slice begins in the file, which is 0 for
+        // `crop_bound`: an index-dependent edit reads absolute positions
+        // from here, so handing it the window start would shift its phase.
+        start_index: proven_from,
         comp_size,
         period,
     };
@@ -247,9 +316,13 @@ pub fn run() -> Result<(), String> {
         true => Some(((padded_samples / 2) / samples_per_step) * samples_per_step),
         false => None,
     };
-    let initial_state = match concat_len_a {
-        Some(len_a) => vec![(4usize, len_a as u64)],
-        None => initial_state,
+    let initial_state = match (concat_len_a, bound) {
+        (Some(len_a), _) => vec![(4usize, len_a as u64)],
+        // The window's length joins its start in the state: the circuit
+        // gates on both, and carrying them through unchanged is what lets
+        // the verifier read back the window it supplied.
+        (None, true) => vec![(3usize, window_start as u64), (4usize, window_len as u64)],
+        (None, false) => initial_state,
     };
     if let Some(len_a) = concat_len_a {
         println!(
@@ -262,9 +335,16 @@ pub fn run() -> Result<(), String> {
     let edited_path = format!("{out_dir}/{}_{}.wav", stem(&audio), edit.name);
     // Publish the audio, not the padding: the verifier re-pads from the
     // signed length, and a file carrying the pad would be N_padded long.
+    //
+    // `crop_bound` folds the original from 0 but publishes only the
+    // window, so what it writes is the slice the gate selected.
+    let published: &[i32] = match bound {
+        true => &edited[window_start..window_start + n_samples],
+        false => &edited[..n_samples],
+    };
     audio_parser::write_file_at(
         &edited_path,
-        &edited[..n_samples],
+        published,
         rate,
         bit_depth as u32,
         if channels == 1 {
@@ -381,6 +461,20 @@ pub fn run() -> Result<(), String> {
         _ => None,
     };
 
+    // `crop_bound`'s two chains cover different spans, so the edited one
+    // is checked too: h_orig covering the whole stream is the new claim,
+    // and a gate that absorbed the wrong batches would still produce a
+    // matching h_orig while committing the excerpt to something else.
+    if bound {
+        let h_window = commit(&original[window_start..window_start + window_len]);
+        if h_window != metrics.final_hash_edited {
+            return Err(format!(
+                "commitment mismatch on the window: circuit {} vs recomputed {h_window}",
+                metrics.final_hash_edited
+            ));
+        }
+    }
+
     let mut z0 = vec![0u64; edit.state_width];
     for (i, v) in &initial_state {
         z0[*i] = *v;
@@ -396,14 +490,22 @@ pub fn run() -> Result<(), String> {
             bit_depth,
             batch_size,
             comp_size,
-            samples: n_samples,
+            // For `crop_bound`, `samples` describes the stream h_orig
+            // covers - the original - so a signature over it can agree.
+            // The window the verifier actually holds goes in samples_out.
+            samples: match bound {
+                true => proven_n,
+                false => n_samples,
+            },
             padded_samples,
+            samples_out: bound.then_some(n_samples),
             iterations: metrics.iterations,
             z0,
             h_orig: metrics.final_hash_original.clone(),
             h_edit: metrics.final_hash_edited.clone(),
             h_b,
             len_a: concat_len_a,
+            window: bound.then_some((window_start, window_len)),
             proof: serde_json::from_slice(&artifacts.proof_json).map_err(|e| e.to_string())?,
         },
     )?;

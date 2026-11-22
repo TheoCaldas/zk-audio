@@ -540,6 +540,7 @@ benchmark needed them.
 | `dist_d50`, `dist_d100` | rectifying distortion at a wet blend | 8, 16, 24 |
 | `tremolo_f5` | LFO amplitude modulation (table-driven) | 8, 16, 24 |
 | `crop` | a window, with a proven sample counter | 8, 16, 24 |
+| `crop_bound` | a window, bound to the whole original's commitment | 8, 16, 24 |
 | `concat`, `merge` | two input streams | 8 |
 | `gain2` | `x * 2`, **no clamping** (the pre-sponge baseline) | 16 |
 
@@ -549,6 +550,18 @@ CLI**: it absorbs with the arity-2 chain rather than the rate-4 sponge
 interchangeable with the production circuits'. `concat` and `merge` are
 offered; both prompt for a second source, and a concat proof commits to
 spans of its sources rather than to whole streams.
+
+`crop` and `crop_bound` prove the same relation and differ in what
+`h_orig` covers. `crop` folds only the window, so its `h_orig` commits to
+the excerpt and cannot be checked against a signature over the file the
+excerpt came from. `crop_bound` folds every batch of the original and
+gates the edited chain on the window, so `h_orig` is the whole file's
+commitment and several excerpts verify against one signature. It costs
+one fold per batch of the original rather than of the window, which is
+the price of a commitment that covers the signed stream; the step itself
+is cheaper than crop's. `crop_bound` is not offered as a chain stage,
+since the chain driver has no place to put its window. See
+[docs/crop_and_concat.md](docs/crop_and_concat.md).
 
 The `gain_k2_{nohash,wide,wide4,wide8,onehash,sponge4,sponge8,sponge2h}`
 entries are **hashing ablations for the optimisation study**, not usable
@@ -639,6 +652,7 @@ cargo test --release
 | `tests/poseidon_parity.rs` | Rust/Circom hash agreement, pinned to circom witnesses |
 | `tests/protocol_end_to_end.rs` | the full protocol over real proofs, plus tamper cases |
 | `tests/chain_end_to_end.rs` | multi-stage chains over real proofs: the seam, broken links, terminal crop/merge |
+| `tests/crop_bound.rs` | `crop_bound` over real proofs: `h_orig` covers the whole original, the gated chain covers the window |
 | `src/audio_editor.rs` unit tests | each edit against its circuit, exhaustively at 8-bit |
 | `src/signer.rs` unit tests | sign/verify round trips |
 

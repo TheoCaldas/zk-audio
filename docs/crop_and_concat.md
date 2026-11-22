@@ -45,14 +45,73 @@ Poseidon hashing every edit pays, plus `batch_size` field equalities.
 Crop proves the excerpt is unmodified and contiguous, and pins its
 position relative to the counter's origin. It does **not** bind the
 excerpt to a specific larger file: the outer file's hash never enters the
-statement, because a sequential Merkle–Damgård chain cannot be opened at
-an interior window.
+statement, because only the window is folded, so `step_out[0]` is a
+commitment to the excerpt rather than to the file.
 
-Proving "this excerpt is positions 1000..2499 of the file with root R"
-would need the original committed as a Merkle tree, which changes the
-commitment scheme for every edit and invalidates existing commitment
-tables. Left as future work. **State this limitation wherever the crop
-edit is reported.**
+A verifier sees this as a `bundles agree` failure: the signature covers
+all 471 steps of the source, the proof covers the 20 the window needed,
+and nothing relates the two commitments. **State this limitation wherever
+the `crop` edit is reported.** `crop_bound` below removes it.
+
+## Crop bound to the original
+
+`crop_bound` proves the same relation as crop and additionally ties the
+excerpt to the full original: *the edited stream is samples
+`[win_start, win_start + win_len)` of the stream committed in
+`step_out[0]`, which is a commitment to the whole original.*
+
+### Why a Merkle tree is not needed
+
+Opening a sequential chain at an interior window looks like it requires a
+Merkle commitment. It does not, because the prover is not trying to
+*avoid* touching the discarded samples — it only has to avoid revealing
+them. The Merkle–Damgård state the sponge already produces is a resumable
+chaining value, so the circuit can fold **every** batch of the original
+into one chain and gate which batches reach the edited chain:
+
+```
+hash_orig' = H(hash_orig, hb)                     always
+hash_edit' = in_window ? H(hash_edit, hb) : hash_edit
+in_window  = (idx >= win_start) && (idx < win_start + win_len)
+```
+
+The discarded batches enter the hash and nothing else: they are private
+witness, never output, and the relation says nothing about their values.
+`hash_orig` therefore terminates at exactly the value a signer computes
+over the file, so the existing commitment scheme is unchanged and every
+other edit's commitment tables stay valid — which is what the Merkle-tree
+approach would have cost.
+
+IVC state is five wide — `(hash_orig, hash_edit, idx, win_start, win_len)`
+— with both bounds carried through unchanged so the verifier sets them in
+`z0` and reads the same values back. As with concat's join, both bounds
+must be fold-aligned, since the gate tests the counter once per step
+rather than per sample.
+
+### What it costs
+
+One fold per batch of the **original**, not of the excerpt: proving a
+0.7-second window of a 16-second file still folds the whole 16 seconds.
+The step count is the entire price — the step itself is *cheaper* than
+plain crop's, 8,770 non-linear constraints against 16,686 at bd=16/B=100.
+Crop sponges both batches, while here only the original's is absorbed and
+the edited chain reuses that digest, which more than pays for the extra
+Poseidon(2), the two counter comparisons and the `Mux1`.
+
+That price is intrinsic rather than an artefact of this construction: a
+commitment to the whole file cannot be produced without reading the whole
+file. A prover unwilling to pay it wants plain `crop` and its weaker
+statement.
+
+### What it proves
+
+The published audio is a verbatim contiguous run of the signed original,
+at a named position. Several excerpts of one file share a single
+`h_orig`, so they all verify against one signature.
+
+It still does not establish that the prover *held* the signed original
+rather than signing their own audio — that needs the signature checked
+in-circuit, which is unattempted. See README.md, "Trust model".
 
 ### Composition caveat
 

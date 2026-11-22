@@ -471,6 +471,21 @@ pub fn registry() -> Vec<EditSpec> {
             multi_input: false,
             state_width: 3,
         },
+        // Crop bound to the full original: the original chain absorbs
+        // every batch, so its terminal value is a commitment to the
+        // whole stream and can equal a signature over it. The window is
+        // carried in the state and gates the edited chain.
+        EditSpec {
+            name: "crop_bound",
+            circuit_prefix: "crop_bound",
+            apply: crop_window,
+            apply2: None,
+            factor: None,
+            clamps: false,
+            bit_depths: &[8, 16, 24],
+            multi_input: false,
+            state_width: 5,
+        },
         // Distortion: memoryless like gain, but the first edit needing a
         // sign test (for |x|) as well as a clamp.
         EditSpec {
@@ -646,6 +661,8 @@ pub fn circuit_name_for(
         ("dist", Some(d)) => format!("dist_b{}_d{}_B{}", bit_depth, d, batch_size),
         // Crop takes no parameter: the window is carried by the counter.
         ("crop", None) => format!("crop_b{}_B{}", bit_depth, batch_size),
+        // Same, plus the window bounds, which travel in the state.
+        ("crop_bound", None) => format!("crop_bound_b{}_B{}", bit_depth, batch_size),
         // The default merge is the averaging variant; the clamped-sum
         // artifacts keep the unsuffixed name as the cost control.
         ("merge", None) => format!("merge_b{}_avg_B{}", bit_depth, batch_size),
@@ -686,6 +703,7 @@ pub fn circuit_source_dir(prefix: &str) -> &'static str {
         "tremolo" => "circuits/edits/tremolo",
         "dist" => "circuits/edits/distortion",
         "crop" => "circuits/edits/crop",
+        "crop_bound" => "circuits/edits/crop",
         "merge" => "circuits/edits/merge",
         "concat" => "circuits/edits/concat",
         // The gain2 baseline still lives in the pre-reorganisation tree.

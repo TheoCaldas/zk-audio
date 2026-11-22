@@ -46,6 +46,8 @@ fn proof_bundle_round_trips() {
         h_edit: "0xbb".to_string(),
         h_b: None,
         len_a: None,
+        samples_out: None,
+        window: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -161,6 +163,8 @@ fn bundles_carry_both_lengths() {
         h_edit: "0xbb".to_string(),
         h_b: None,
         len_a: None,
+        samples_out: None,
+        window: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -213,6 +217,8 @@ fn a_two_input_bundle_round_trips_both_sources() {
         h_edit: "0xbb".to_string(),
         h_b: Some("0xcc".to_string()),
         len_a: None,
+        samples_out: None,
+        window: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -242,6 +248,8 @@ fn a_concat_bundle_carries_its_join_point() {
         h_edit: "0xbb".to_string(),
         h_b: Some("0xcc".to_string()),
         len_a: Some(3100),
+        samples_out: None,
+        window: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
@@ -274,6 +282,8 @@ fn a_single_input_bundle_omits_the_two_input_fields() {
         h_edit: "0xbb".to_string(),
         h_b: None,
         len_a: None,
+        samples_out: None,
+        window: None,
         proof: serde_json::json!({"stub": true}),
     };
     bundle::write(path, &b).expect("write");
